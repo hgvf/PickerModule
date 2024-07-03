@@ -56,8 +56,8 @@ class Mqtt():
         self.cnt = 0
         self.init_shared_params()
         self.station_chunk()
+        self.activate_mqtt()
 
-    # 建立連線（接收到 CONNACK）的回呼函數
     def on_connect(self, client, userdata, flags, rc):
         if rc == 0:
             print("Connected with result code " + str(rc))
@@ -66,7 +66,6 @@ class Mqtt():
             print("Failed to connect, ", rc)
             client.disconnect()
 
-    # 接收訊息（接收到 PUBLISH）的回呼函數
     def on_message(self, client, userdata, msg):
         # 0.0003 s on average
 
@@ -78,8 +77,8 @@ class Mqtt():
         location = location.decode().strip()
         channel = channel.decode().strip()
         scnl = f"{station}_{channel}_{network}_{location}"
-        data = np.array(struct.unpack(f"<{nsamp:d}i", msg[40:]), dtype=np.int32)
-    
+        data = np.array(struct.unpack(f"<{nsamp:d}i", msg[40:]), dtype=np.float32)
+
         # update the key_index
         if scnl not in self.key_index:
             if scnl not in self.key_index:
@@ -87,14 +86,16 @@ class Mqtt():
                 self.key_cnt.value += 1
 
         # append the data in package into shared waveform buffer
-        startIndex = int(starttime*int(self.env_config['SAMP_RATE'])) - int(self.waveform_buffer_start_time.value)
-        data = data.copy().astype(np.float32)
+        startIndex = int(starttime*self.samp_rate) - int(self.waveform_buffer_start_time.value)
+        data = data.copy()
         self.waveform_buffer[self.key_index[scnl]][startIndex:startIndex+nsamp] = torch.from_numpy(data)
-        
+    
         # send information to module for calculating Pa, Pv, and Pd
         if channel[-1] == 'Z':
             msg_to_pavd = {scnl: data}
             self.pavd_scnl.put(msg_to_pavd)
+
+        # print('package/current time: ', starttime, time.time())
     
     def on_disconnect(self, client, userdata, rc):
         if rc != 0:
@@ -122,8 +123,6 @@ class Mqtt():
 
     def start(self):
         try:
-            self.activate_mqtt()
-
             time_mover = Process(target=TimeMover, args=(self.waveform_buffer, self.env_config, self.nowtime, self.waveform_buffer_start_time))
             time_mover.start()
 
@@ -131,7 +130,7 @@ class Mqtt():
             pavd_sender.start()
 
             picker = Process(target=Picker, args=(self.waveform_buffer, self.key_index, self.nowtime, self.waveform_buffer_start_time, self.env_config, self.key_cnt, self.stationInfo, self.device,
-                                                    (self.notify_tokens, self.waveform_tokens), self.logfilename_pick, self.logfilename_original_pick, self.logfilename_notify, self.logfilename_cwb_pick, self.upload_TF, 
+                                                    (self.notify_tokens, self.waveform_tokens), self.logfilename_pick, self.logfilename_original_pick, self.logfilename_notify, self.upload_TF, 
                                                     self.remove_daily, self.waveform_plot_TF, self.plot_info, self.waveform_plot_wf, self.waveform_plot_out, self.waveform_plot_picktime,
                                                     self.notify_TF, self.toNotify_pickedCoord, self.n_notify, self.avg_pickingtime, self.median_pickingtime, self.n_pick, self.logfilename_stat, self.pick_stat_notify,
                                                     self.pavd_sta))
@@ -175,6 +174,7 @@ class Mqtt():
         self.env_config = manager.dict()
         for k, v in dotenv_values(".env").items():
             self.env_config[k] = v
+        self.samp_rate = int(self.env_config['SAMP_RATE'])
 
         # device
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  
@@ -192,10 +192,7 @@ class Mqtt():
         else:
             self.stationInfo = get_StationInfo(self.env_config['NSTA_FILEPATH'], (datetime.utcfromtimestamp(time.time()) + timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S.%f'))
 
-        if int(self.env_config['CHUNK']) == -1:
-            n_stations = len(self.stationInfo)
-        else:
-            n_stations = int(self.env_config["N_PREDICTION_STATION"])
+        n_stations = int(self.env_config["N_PREDICTION_STATION"])
 
         # a deque from time-3000 to time for time index
         self.nowtime = Value('d', int(time.time()*100))
@@ -207,7 +204,7 @@ class Mqtt():
         # a dict for checking scnl's index of waveform
         self.key_index = manager.dict()
       
-        self.waveform_buffer = torch.zeros((n_stations*6, int(self.env_config["STORE_LENGTH"]))).share_memory_()
+        self.waveform_buffer = torch.zeros((n_stations*3, int(self.env_config["STORE_LENGTH"]))).share_memory_()
 
         # parameters for Shower
         self.plot_info = manager.Value(c_char_p, 'hello')
@@ -220,7 +217,6 @@ class Mqtt():
         self.logfilename_pick = manager.Value(c_char_p, 'hello')
         self.logfilename_notify = manager.Value(c_char_p, 'hello')
         self.logfilename_original_pick = manager.Value(c_char_p, 'hello')
-        self.logfilename_cwb_pick = manager.Value(c_char_p, 'hello')
         self.logfilename_stat = manager.Value(c_char_p, 'hello')
         self.upload_TF = Value('d', int(0))
         self.avg_pickingtime = Value('d', int(0))
@@ -260,21 +256,25 @@ class Mqtt():
 def TimeMover(waveform_buffer, env_config, nowtime, waveform_buffer_start_time):
     print('Starting TimeMover...')
 
-    move_second = int(env_config['SAMP_RATE']) * int(env_config['SECOND_MOVE_BUFFER'])
+    local_env = {}
+    for k, v in env_config.items():
+        local_env[k] = v
+
+    move_second = int(local_env['SAMP_RATE']) * int(local_env['SECOND_MOVE_BUFFER'])
     while True:
         try:
             # move the time window of timeIndex and waveform every 5 seconds
-            if int(time.time()*int(env_config['SAMP_RATE'])) - nowtime.value >= move_second:
-                waveform_buffer[:, 0:int(env_config["STORE_LENGTH"])-move_second] = waveform_buffer[:, move_second:int(env_config["STORE_LENGTH"])]
+            if int(time.time()*int(local_env['SAMP_RATE'])) - nowtime.value >= move_second:
+                waveform_buffer[:, 0:int(local_env["STORE_LENGTH"])-move_second] = waveform_buffer[:, move_second:int(local_env["STORE_LENGTH"])]
                 
                 # the updated waveform is fill in with 0
-                waveform_buffer[:, int(env_config["STORE_LENGTH"])-move_second:int(env_config["STORE_LENGTH"])] = torch.zeros((waveform_buffer.shape[0],move_second))
+                waveform_buffer[:, int(local_env["STORE_LENGTH"])-move_second:int(local_env["STORE_LENGTH"])] = torch.zeros((waveform_buffer.shape[0],move_second))
                 waveform_buffer_start_time.value += move_second
                 nowtime.value += move_second
         except Exception as e:
             # log the pending 
             cur = datetime.fromtimestamp(time.time())
-            picking_logfile = f"./log/exception/{env_config['CHECKPOINT_TYPE']}_{cur.year}-{cur.month}-{cur.day}.log"
+            picking_logfile = f"./log/exception/{local_env['CHECKPOINT_TYPE']}_{cur.year}-{cur.month}-{cur.day}.log"
             with open(picking_logfile,"a") as pif:
                 pif.write('='*25)
                 pif.write('\n')
@@ -289,22 +289,26 @@ def TimeMover(waveform_buffer, env_config, nowtime, waveform_buffer_start_time):
 
 # picking: pick and send pick_msg to PICK_RING
 def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_config, key_cnt, stationInfo, device,
-            tokens, logfilename_pick, logfilename_original_pick, logfilename_notify, logfilename_cwb_pick, uploadwave_cnt, remove_daily,
-            waveform_plot_TF, plot_info, waveform_plot_wf, waveform_plot_out, waveform_plot_picktime,
+            tokens, logfilename_pick, logfilename_original_pick, logfilename_notify, upload_TF, 
+            remove_daily, waveform_plot_TF, plot_info, waveform_plot_wf, waveform_plot_out, waveform_plot_picktime,
             notify_TF, toNotify_pickedCoord, n_notify, avg_pickingtime, median_pickingtime, n_pick, logfilename_stat, pick_stat_notify,
             pavd_sta):
     
     print('Starting Picker...')
     
+    local_env = {}
+    for k, v in env_config.items():
+        local_env[k] = v
+
     # loading pretrained picker
-    model_path = env_config["PICKER_CHECKPOINT_PATH"]
-    if env_config["CHECKPOINT_TYPE"] == 'GRADUATE':
+    model_path = local_env["PICKER_CHECKPOINT_PATH"]
+    if local_env["CHECKPOINT_TYPE"] == 'GRADUATE':
         in_feat = 12
-        model = GRADUATE(conformer_class=8, d_ffn=128, nhead=4, enc_layers=2, dec_layers=1, d_model=12, wavelength=int(env_config['PREDICT_LENGTH'])).to(device)
+        model = GRADUATE(conformer_class=8, d_ffn=128, nhead=4, enc_layers=2, dec_layers=1, d_model=12, wavelength=int(local_env['PREDICT_LENGTH'])).to(device)
         torch.cuda.empty_cache()
-    elif env_config["CHECKPOINT_TYPE"] == 'eqt':
+    elif local_env["CHECKPOINT_TYPE"] == 'eqt':
         in_feat = 3
-        model = sbm.EQTransformer(in_samples=int(env_config['PREDICT_LENGTH'])).to(device)
+        model = sbm.EQTransformer(in_samples=int(local_env['PREDICT_LENGTH'])).to(device)
     checkpoint = torch.load(model_path, map_location=device)
     model.load_state_dict(checkpoint['model'])
     model.eval()
@@ -318,7 +322,7 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
     btype='bandpass'
     analog=False
     _filt_args = (N, Wn, btype, analog)
-    sos = scipy.signal.butter(*_filt_args, output="sos", fs=int(env_config['SAMP_RATE']))
+    sos = scipy.signal.butter(*_filt_args, output="sos", fs=int(local_env['SAMP_RATE']))
 
     # 記錄目前 year, month, day，用於刪除過舊的 log files
     cur = datetime.fromtimestamp(time.time())
@@ -326,12 +330,12 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
     system_hour = cur.hour
     
     # Neighbor_table: 蒐集每個測站方圓 X km 內所有測站的代碼
-    _, neighbor_table = station_selection(sel_chunk=int(env_config["CHUNK"]), station_list=stationInfo, opt=env_config['SOURCE'], build_table=True, n_stations=int(env_config["N_PREDICTION_STATION"]), threshold_km=float(env_config['THRESHOLD_KM']),
-                                            nearest_station=int(env_config['NEAREST_STATION']), option=env_config['TABLE_OPTION'])
+    _, neighbor_table = station_selection(sel_chunk=int(local_env["CHUNK"]), station_list=stationInfo, opt=local_env['SOURCE'], build_table=True, n_stations=int(local_env["N_PREDICTION_STATION"]), threshold_km=float(local_env['THRESHOLD_KM']),
+                                            nearest_station=int(local_env['NEAREST_STATION']), option=local_env['TABLE_OPTION'])
 
     # sleeping, 讓波型先充滿 noise，而不是 0
     print('pending...')
-    for _ in tqdm(range(int(env_config['SLEEP_SECOND']))):
+    for _ in tqdm(range(int(local_env['SLEEP_SECOND']))):
         time.sleep(1)
 
     # handle line notify tokens
@@ -360,14 +364,14 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
 
             # 已經是系統時間的隔天，檢查有沒有過舊的 log file，有的話將其刪除
             if f"{system_year}-{system_month}-{system_day}" != f"{cur.year}-{cur.month}-{cur.day}":
-                toDelete_picking = cur - timedelta(days=int(env_config['DELETE_PICKINGLOG_DAY']))
-                toDelete_notify = cur - timedelta(days=int(env_config['DELETE_NOTIFYLOG_DAY']))
+                toDelete_picking = cur - timedelta(days=int(local_env['DELETE_PICKINGLOG_DAY']))
+                toDelete_notify = cur - timedelta(days=int(local_env['DELETE_NOTIFYLOG_DAY']))
 
-                toDelete_picking_filename = f"./log/picking/{env_config['CHECKPOINT_TYPE']}_{toDelete_picking.year}-{toDelete_picking.month}-{toDelete_picking.day}_picking_chunk{env_config['CHUNK']}.log"
-                toDelete_original_picking_filename = f"./log/original_picking/{env_config['CHECKPOINT_TYPE']}_{toDelete_picking.year}-{toDelete_picking.month}-{toDelete_picking.day}_original_picking_chunk{env_config['CHUNK']}.log"
-                toDelete_notify_filename = f"./log/notify/{env_config['CHECKPOINT_TYPE']}_{toDelete_notify.year}-{toDelete_notify.month}-{toDelete_notify.day}_notify_chunk{env_config['CHUNK']}.log"
-                toDelete_cwbpicker_filename = f"./log/CWBPicker/{env_config['CHECKPOINT_TYPE']}_{toDelete_picking.year}-{toDelete_picking.month}-{toDelete_picking.day}_picking.log"
-                toDelete_exception_filename = f"./log/exception/{env_config['CHECKPOINT_TYPE']}_{toDelete_picking.year}-{toDelete_picking.month}-{toDelete_picking.day}.log"
+                toDelete_picking_filename = f"./log/picking/{local_env['CHECKPOINT_TYPE']}_{toDelete_picking.year}-{toDelete_picking.month}-{toDelete_picking.day}_picking_chunk{local_env['CHUNK']}.log"
+                toDelete_original_picking_filename = f"./log/original_picking/{local_env['CHECKPOINT_TYPE']}_{toDelete_picking.year}-{toDelete_picking.month}-{toDelete_picking.day}_original_picking_chunk{local_env['CHUNK']}.log"
+                toDelete_notify_filename = f"./log/notify/{local_env['CHECKPOINT_TYPE']}_{toDelete_notify.year}-{toDelete_notify.month}-{toDelete_notify.day}_notify_chunk{local_env['CHUNK']}.log"
+                toDelete_cwbpicker_filename = f"./log/CWBPicker/{local_env['CHECKPOINT_TYPE']}_{toDelete_picking.year}-{toDelete_picking.month}-{toDelete_picking.day}_picking.log"
+                toDelete_exception_filename = f"./log/exception/{local_env['CHECKPOINT_TYPE']}_{toDelete_picking.year}-{toDelete_picking.month}-{toDelete_picking.day}.log"
 
                 if os.path.exists(toDelete_picking_filename):
                     os.remove(toDelete_picking_filename)
@@ -381,16 +385,15 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
                     os.remove(toDelete_exception_filename)
 
                 # upload files
-                logfilename_pick.value = f"./log/picking/{env_config['CHECKPOINT_TYPE']}_{system_year}-{system_month}-{system_day}_picking_chunk{env_config['CHUNK']}.log"
-                logfilename_original_pick.value = f"./log/original_picking/{env_config['CHECKPOINT_TYPE']}_{system_year}-{system_month}-{system_day}_original_picking_chunk{env_config['CHUNK']}.log"
-                logfilename_notify.value = f"./log/notify/{env_config['CHECKPOINT_TYPE']}_{system_year}-{system_month}-{system_day}_notify_chunk{env_config['CHUNK']}.log"
-                logfilename_cwb_pick.value = f"./log/CWBPicker/{env_config['CHECKPOINT_TYPE']}_{system_year}-{system_month}-{system_day}_picking.log"
-                logfilename_stat.value = f"./log/statistical/{env_config['CHECKPOINT_TYPE']}_{system_year}-{system_month}-{system_day}_picker_stat.log"
+                logfilename_pick.value = f"./log/picking/{local_env['CHECKPOINT_TYPE']}_{system_year}-{system_month}-{system_day}_picking_chunk{local_env['CHUNK']}.log"
+                logfilename_original_pick.value = f"./log/original_picking/{local_env['CHECKPOINT_TYPE']}_{system_year}-{system_month}-{system_day}_original_picking_chunk{local_env['CHUNK']}.log"
+                logfilename_notify.value = f"./log/notify/{local_env['CHECKPOINT_TYPE']}_{system_year}-{system_month}-{system_day}_notify_chunk{local_env['CHUNK']}.log"
+                logfilename_stat.value = f"./log/statistical/{local_env['CHECKPOINT_TYPE']}_{system_year}-{system_month}-{system_day}_picker_stat.log"
 
                 # 將每日統計結果傳給 Uploader
                 if len(pick_stat) > 0:
-                    avg_pickingtime.value = round((int(env_config['PREDICT_LENGTH']) - np.mean(pick_stat)) / int(self.env_config['SAMP_RATE']), 2)
-                    median_pickingtime.value = round((int(env_config['PREDICT_LENGTH']) - np.median(pick_stat)) / int(self.env_config['SAMP_RATE']), 2)
+                    avg_pickingtime.value = round((int(local_env['PREDICT_LENGTH']) - np.mean(pick_stat)) / int(self.local_env['SAMP_RATE']), 2)
+                    median_pickingtime.value = round((int(local_env['PREDICT_LENGTH']) - np.median(pick_stat)) / int(self.local_env['SAMP_RATE']), 2)
                     n_pick.value = len(pick_stat)
                 else:
                     avg_pickingtime.value = 0
@@ -449,14 +452,14 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
                 continue
 
             # take only 3000-sample waveform
-            start = int(env_config['STORE_LENGTH'])//2-int(env_config['PREDICT_LENGTH'])
-            end = int(env_config['STORE_LENGTH'])//2
+            start = int(local_env['STORE_LENGTH'])//2-int(local_env['PREDICT_LENGTH'])
+            end = int(local_env['STORE_LENGTH'])//2
 
             toPredict_wave = cur_waveform_buffer[torch.tensor(toPredict_idx, dtype=torch.long)][:, :, start:end].to(device)
             toPredict_scnl = np.array(toPredict_scnl)
             
             # get the factor and coordinates of stations
-            if env_config['SOURCE'] == 'Palert' or env_config['SOURCE'] == 'CWASN' or env_config['SOURCE'] == 'TSMIP':
+            if local_env['SOURCE'] == 'Palert' or local_env['SOURCE'] == 'CWASN' or local_env['SOURCE'] == 'TSMIP':
                 station_factor_coords, station_list, flag = get_Palert_CWB_coord(toPredict_scnl, stationInfo)
 
                 # count to gal
@@ -480,44 +483,44 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
             original_wave = toPredict_wave.clone()
             unnormed_wave = original_wave.clone()
             
-            if int(env_config['ZSCORE']) == 1:
+            if int(local_env['ZSCORE']) == 1:
                 toPredict_wave = z_score(toPredict_wave)
 
-            if int(env_config['FILTER']) == 1:
+            if int(local_env['FILTER']) == 1:
                 toPredict_wave = filter(toPredict_wave, sos)
 
-            if env_config["CHECKPOINT_TYPE"] == 'GRADUATE':
+            if local_env["CHECKPOINT_TYPE"] == 'GRADUATE':
                 stft = STFT(toPredict_wave).to(device)
                 toPredict_wave = calc_feats(toPredict_wave)
 
             # predict
             with torch.no_grad():
                 # for conformer
-                if env_config["CHECKPOINT_TYPE"] == 'GRADUATE':
+                if local_env["CHECKPOINT_TYPE"] == 'GRADUATE':
                     out = model(toPredict_wave, stft=stft)[1].detach().squeeze().cpu()   
                 # for eqt
-                elif env_config["CHECKPOINT_TYPE"] == 'eqt':
+                elif local_env["CHECKPOINT_TYPE"] == 'eqt':
                     out = model(toPredict_wave)[1].detach().squeeze().cpu()
 
             # select the p-arrival time 
-            original_res, pred_trigger = evaluation(out, float(env_config["THRESHOLD_PROB"]), int(env_config["THRESHOLD_TRIGGER"]), env_config["THRESHOLD_TYPE"])
+            original_res, pred_trigger = evaluation(out, float(local_env["THRESHOLD_PROB"]), int(local_env["THRESHOLD_TRIGGER"]), local_env["THRESHOLD_TYPE"])
             original_res = np.logical_and(original_res, flag).tolist()
 
             # 寫 original res 的 log 檔
             if np.any(original_res):   
                 # calculate Pa, Pv, Pd
-                Pa, Pv, Pd, duration = picking_append_info(pavd_sta, toPredict_scnl, original_res, pred_trigger, int(env_config['PREDICT_LENGTH']))
+                Pa, Pv, Pd, duration = picking_append_info(pavd_sta, toPredict_scnl, original_res, pred_trigger, int(local_env['PREDICT_LENGTH']))
 
                 # calculate p_weight
-                P_weight = picking_p_weight_info(out, original_res, env_config['PWEIGHT_TYPE'], (float(env_config['PWEIGHT0']), float(env_config['PWEIGHT1']),float(env_config['PWEIGHT2'])),
+                P_weight = picking_p_weight_info(out, original_res, local_env['PWEIGHT_TYPE'], (float(local_env['PWEIGHT0']), float(local_env['PWEIGHT1']),float(local_env['PWEIGHT2'])),
                                                     toPredict_wave[:, 0].clone(), pred_trigger)
 
                 # send pick_msg to PICK_RING
-                original_pick_msg = gen_pickmsg(station_factor_coords, original_res, pred_trigger, toPredict_scnl, cur_waveform_starttime, (Pa, Pv, Pd), duration, P_weight, int(env_config['STORE_LENGTH']), int(env_config['PREDICT_LENGTH']))
+                original_pick_msg = gen_pickmsg(station_factor_coords, original_res, pred_trigger, toPredict_scnl, cur_waveform_starttime, (Pa, Pv, Pd), duration, P_weight, int(local_env['STORE_LENGTH']), int(local_env['PREDICT_LENGTH']))
 
                 # get the filenames
                 cur = datetime.fromtimestamp(time.time())
-                original_picking_logfile = f"./log/original_picking/{env_config['CHECKPOINT_TYPE']}_{cur.year}-{cur.month}-{cur.day}_original_picking_chunk{env_config['CHUNK']}.log"
+                original_picking_logfile = f"./log/original_picking/{local_env['CHECKPOINT_TYPE']}_{cur.year}-{cur.month}-{cur.day}_original_picking_chunk{local_env['CHUNK']}.log"
 
                 print('Original pick: ', original_res.count(True))
                 # writing original picking log file
@@ -540,32 +543,32 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
                     pif.close()
                 
                 # filter the picked station that picked within picktime_gap seconds before
-                original_res, pick_record = check_duplicate_pick(original_res, toPredict_scnl, pick_record, pred_trigger, cur_waveform_starttime, int(env_config["PICK_GAP"]), int(env_config['STORE_LENGTH']), int(env_config['PREDICT_LENGTH']))
+                original_res, pick_record = check_duplicate_pick(original_res, toPredict_scnl, pick_record, pred_trigger, cur_waveform_starttime, int(local_env["PICK_GAP"]), int(local_env['STORE_LENGTH']), int(local_env['PREDICT_LENGTH']))
 
                 # 檢查 picking time 是否在 2500-th sample 之後
-                original_res, pred_trigger, res = EEW_pick(original_res, pred_trigger, int(env_config['VALID_PICKTIME']))
+                original_res, pred_trigger, res = EEW_pick(original_res, pred_trigger, int(local_env['VALID_PICKTIME']))
 
                 # print(pred_trigger)
                 # 區域型 picking
-                if int(env_config['AVOID_FP']) == 1:
-                    if env_config['TABLE_OPTION'] == 'nearest':
-                        res = neighbor_picking(neighbor_table, station_list, res, original_res, int(env_config['THRESHOLD_NEIGHBOR']))   # 用鄰近測站來 pick
-                    elif env_config['TABLE_OPTION'] == 'km':
-                        res = post_picking(station_factor_coords, res, float(env_config["THRESHOLD_KM"]))                         # 用方圓幾公里來 pick
+                if int(local_env['AVOID_FP']) == 1:
+                    if local_env['TABLE_OPTION'] == 'nearest':
+                        res = neighbor_picking(neighbor_table, station_list, res, original_res, int(local_env['THRESHOLD_NEIGHBOR']))   # 用鄰近測站來 pick
+                    elif local_env['TABLE_OPTION'] == 'km':
+                        res = post_picking(station_factor_coords, res, float(local_env["THRESHOLD_KM"]))                         # 用方圓幾公里來 pick
 
                 # calculate Pa, Pv, Pd
-                Pa, Pv, Pd, duration = picking_append_info(pavd_sta, toPredict_scnl, res, pred_trigger, int(env_config['PREDICT_LENGTH']), clear=True)
+                Pa, Pv, Pd, duration = picking_append_info(pavd_sta, toPredict_scnl, res, pred_trigger, int(local_env['PREDICT_LENGTH']), clear=True)
 
                 # calculate p_weight
-                P_weight = picking_p_weight_info(out, res, env_config['PWEIGHT_TYPE'], (float(env_config['PWEIGHT0']), float(env_config['PWEIGHT1']),float(env_config['PWEIGHT2'])),
+                P_weight = picking_p_weight_info(out, res, local_env['PWEIGHT_TYPE'], (float(local_env['PWEIGHT0']), float(local_env['PWEIGHT1']),float(local_env['PWEIGHT2'])),
                                                     toPredict_wave[:, 0].clone(), pred_trigger)
 
                 # send pick_msg to PICK_RING
-                pick_msg = gen_pickmsg(station_factor_coords, res, pred_trigger, toPredict_scnl, cur_waveform_starttime, (Pa, Pv, Pd), duration, P_weight, int(env_config['STORE_LENGTH']), int(env_config['PREDICT_LENGTH']))
+                pick_msg = gen_pickmsg(station_factor_coords, res, pred_trigger, toPredict_scnl, cur_waveform_starttime, (Pa, Pv, Pd), duration, P_weight, int(local_env['STORE_LENGTH']), int(local_env['PREDICT_LENGTH']))
 
                 # get the filenames
                 cur = datetime.fromtimestamp(time.time())
-                picking_logfile = f"./log/picking/{env_config['CHECKPOINT_TYPE']}_{cur.year}-{cur.month}-{cur.day}_picking_chunk{env_config['CHUNK']}.log"
+                picking_logfile = f"./log/picking/{local_env['CHECKPOINT_TYPE']}_{cur.year}-{cur.month}-{cur.day}_picking_chunk{local_env['CHUNK']}.log"
 
                 # writing picking log file
                 picked_coord = []
@@ -583,7 +586,7 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
                         # filtered by P_weight
                         p_weight = int(tmp[-3])
 
-                        if p_weight <= int(env_config['REPORT_P_WEIGHT']):
+                        if p_weight <= int(local_env['REPORT_P_WEIGHT']):
                             pif.write(" ".join(tmp[:6]))
 
                             pick_time = datetime.utcfromtimestamp(float(tmp[-4]))
@@ -600,9 +603,9 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
                 cur_time = datetime.utcfromtimestamp(time.time())
                 print(f"{len(picked_coord)} stations are picked! <- {cur_time.strftime('%Y-%m-%d %H:%M:%S.%f')}")
 
-                if len(picked_coord) >= int(env_config["REPORT_NUM_OF_TRIGGER"]):
+                if len(picked_coord) >= int(local_env["REPORT_NUM_OF_TRIGGER"]):
                     # write line notify info into log file
-                    picking_logfile = f"./log/notify/{env_config['CHECKPOINT_TYPE']}_{cur_time.year}-{cur_time.month}-{cur_time.day}_notify_chunk{env_config['CHUNK']}.log"
+                    picking_logfile = f"./log/notify/{local_env['CHECKPOINT_TYPE']}_{cur_time.year}-{cur_time.month}-{cur_time.day}_notify_chunk{local_env['CHUNK']}.log"
                     with open(picking_logfile,"a") as pif:
                         cur_time = datetime.utcfromtimestamp(time.time())
                         pif.write('='*25)
@@ -623,26 +626,26 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
                         pif.close()
                         
                     # send signal for Notifier to send Line notify
-                    if int(env_config['LINE_NOTIFY']) == 1:
+                    if int(local_env['LINE_NOTIFY']) == 1:
                         n_notify.value *= 0
                         n_notify.value += len(picked_coord)
                         notify_TF.value += 1
 
                 # 將 picked stations 的 picking time 加進 pick_stat 做統計
-                new_pred_trigger = gen_new_pred_trigger(res, pred_trigger, P_weight, int(env_config['REPORT_P_WEIGHT']))
+                new_pred_trigger = gen_new_pred_trigger(res, pred_trigger, P_weight, int(local_env['REPORT_P_WEIGHT']))
                 pick_stat += new_pred_trigger
 
                 # 將 picked stations 的 picking time 加進 pick_stat 做統計
-                if len(new_pred_trigger) >= int(env_config["REPORT_NUM_OF_TRIGGER"]):
+                if len(new_pred_trigger) >= int(local_env["REPORT_NUM_OF_TRIGGER"]):
                     pick_stat_notify.value += len(new_pred_trigger)
 
                 # Let's send line notify for one of the picked stations
-                if int(env_config['PLOT_WAVEFORM']) == 1 and notify_TF.value == 1:
+                if int(local_env['PLOT_WAVEFORM']) == 1 and notify_TF.value == 1:
                     idx = np.arange(len(res))
                     tri_idx = idx[res]
                     plot_idx = random.sample(range(len(tri_idx)), k=1)[0]
                     
-                    if int(P_weight[plot_idx]) > int(env_config['REPORT_P_WEIGHT']):
+                    if int(P_weight[plot_idx]) > int(local_env['REPORT_P_WEIGHT']):
                         pass
                     else:
                         plot_info.value = pick_msg[plot_idx]
@@ -654,7 +657,7 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
             else:
                 # get the filenames
                 cur = datetime.fromtimestamp(time.time())
-                original_picking_logfile = f"./log/original_picking/{env_config['CHECKPOINT_TYPE']}_{cur.year}-{cur.month}-{cur.day}_original_picking_chunk{env_config['CHUNK']}.log"
+                original_picking_logfile = f"./log/original_picking/{local_env['CHECKPOINT_TYPE']}_{cur.year}-{cur.month}-{cur.day}_original_picking_chunk{local_env['CHUNK']}.log"
 
                 # writing original picking log file
                 with open(original_picking_logfile,"a") as pif:
@@ -672,14 +675,14 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
             # pending until 1 second
             while True:
                 cur = time.time()
-                if cur - system_record_time >= float(env_config['MIN_SECOND_ITERATION']):
+                if cur - system_record_time >= float(local_env['MIN_SECOND_ITERATION']):
                     break
 
         except Exception as e:
             # log the pending 
             # print(e)
             cur = datetime.fromtimestamp(time.time())
-            picking_logfile = f"./log/exception/{env_config['CHECKPOINT_TYPE']}_{cur.year}-{cur.month}-{cur.day}.log"
+            picking_logfile = f"./log/exception/{local_env['CHECKPOINT_TYPE']}_{cur.year}-{cur.month}-{cur.day}.log"
             with open(picking_logfile,"a") as pif:
                 pif.write('='*25)
                 pif.write('\n')
@@ -934,6 +937,10 @@ def Pavd_calculator(pavd_calc, waveform_comein, waveform_scnl, waveform_comein_l
     print('Starting Pavd_calculator...')
     MyManager.register('EEW_sta', EEW_sta)
     
+    local_env = {}
+    for k, v in env_config.items():
+        local_env[k] = v
+
     manager = Manager_Pavd()
     while True:
         try:
@@ -949,7 +956,7 @@ def Pavd_calculator(pavd_calc, waveform_comein, waveform_scnl, waveform_comein_l
                 tmp = cur_waveform_scnl.split('_')
 
                 # get gain factor
-                if env_config['SOURCE'] == 'Palert' or env_config['SOURCE'] == 'CWASN' or env_config['SOURCE'] == 'TSMIP':
+                if local_env['SOURCE'] == 'Palert' or local_env['SOURCE'] == 'CWASN' or local_env['SOURCE'] == 'TSMIP':
                     station_factor_coords, _, _ = get_Palert_CWB_coord([cur_waveform_scnl], stationInfo)
 
                     station_factor_coords = float(station_factor_coords[0][-1])
@@ -977,7 +984,7 @@ def Pavd_calculator(pavd_calc, waveform_comein, waveform_scnl, waveform_comein_l
             # log the pending 
             # print(e)
             cur = datetime.fromtimestamp(time.time())
-            picking_logfile = f"./log/exception/{env_config['CHECKPOINT_TYPE']}_{cur.year}-{cur.month}-{cur.day}.log"
+            picking_logfile = f"./log/exception/{local_env['CHECKPOINT_TYPE']}_{cur.year}-{cur.month}-{cur.day}.log"
             with open(picking_logfile,"a") as pif:
                 pif.write('='*25)
                 pif.write('\n')
