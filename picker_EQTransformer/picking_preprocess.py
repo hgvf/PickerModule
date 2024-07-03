@@ -31,20 +31,13 @@ def filter(waveform, sos):
 
     return torch.FloatTensor(res[:, :, n_append*n_repeat:-n_append*n_repeat]).to(device)
 
-def z_score(wave, pad_option, pad_presignal_length):
-    # padding zeros with neighborhood'd values
-    # print(torch.any(wave==0))
-    # start = time.time()
-    # wave, nonzero_flag = padding(wave, pad_option, pad_presignal_length) 
-    # print("padding: ", time.time()-start)
-    nonzero_flag = [True for _ in range(wave.shape[0])]
-
+def z_score(wave):
     eps = 1e-10
 
     wave = wave - torch.mean(wave, dim=-1, keepdims=True)
     wave = wave / (torch.std(wave, dim=-1, keepdims=True) + eps) 
 
-    return wave, nonzero_flag
+    return wave
 
 def calc_feats(waveforms):
     CharFuncFilt = 3
