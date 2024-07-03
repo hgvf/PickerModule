@@ -323,16 +323,19 @@ def neighbor_picking(neighbor_table, station_list, res, original_res, threshold_
     real_res = []
     
     for idx, sta in enumerate(station_list):
-        if not res[idx]:
-            real_res.append(False)
+        try:
+            if not res[idx]:
+                real_res.append(False)
+                continue
+
+            n_pick = len(set(pick_sta).intersection(set(neighbor_table[sta])))
+
+            if (len(neighbor_table[sta]) < threshold_neighbor and n_pick > 1) or (n_pick >= threshold_neighbor):
+                real_res.append(True)
+            else:
+                real_res.append(False)
+        except:
             continue
-
-        n_pick = len(set(pick_sta).intersection(set(neighbor_table[sta])))
-
-        if (len(neighbor_table[sta]) < threshold_neighbor and n_pick > 1) or (n_pick >= threshold_neighbor):
-            real_res.append(True)
-        else:
-            real_res.append(False)
             
     return real_res
 
@@ -822,8 +825,6 @@ def station_selection(sel_chunk, station_list, opt, build_table=False, n_station
                             for i in range(len(stationInfo)//n_stations)]
         station_chunks += [stationInfo[n_stations*(len(stationInfo)//n_stations):]]
 
-        for i in range(len(station_chunks)):
-            print(f"Chunk{i}, station={len(station_chunks[i])}")
         table = 0
         if build_table:
             # build the table that contains every station in "threshold_km" km for each station

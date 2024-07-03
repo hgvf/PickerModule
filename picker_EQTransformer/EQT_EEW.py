@@ -11,7 +11,7 @@ from multiprocessing import Process, Manager, Array, Value, Queue, Pool
 from queue import Queue
 from multiprocessing.managers import BaseManager
 from itertools import compress
-# import PyEW
+
 import ctypes as c
 import random
 import pandas as pd 
@@ -32,10 +32,7 @@ from datetime import datetime, timedelta, timezone
 from collections import deque
 from picking_preprocess import *
 from picking_utils import *
-# from picking_model import *
 from Pavd_module import *
-# from random_test import *
-# from subscriber import report
 
 import seisbench.models as sbm
 
@@ -44,27 +41,24 @@ import matplotlib.pyplot as plt
 import json
 import paho.mqtt.client as mqtt
 from obspy import read
+import struct
 
-path = 'eew_mqtt.txt'
-f = open(path, 'w')
-count = 0
-# for shared class object
-
-def report(msg, model):
-    print(msg)
-    client_p = mqtt.Client()
-    client_p.connect("140.118.127.89", 1883)
-    client_p.publish("PICK24bits/" + model, json.dumps(msg))
-
+# for shared lass object
 class MyManager(BaseManager): pass
 def Manager_Pavd():
     m = MyManager()
     m.start()
     return m 
 
-def Mqtt(wave, clientID, map_chunk_sta):
+class Mqtt():
+    def __init__(self,):
+        
+        self.cnt = 0
+        self.init_shared_params()
+        self.station_chunk()
+
     # 建立連線（接收到 CONNACK）的回呼函數
-    def on_connect(client, userdata, flags, rc):
+    def on_connect(self, client, userdata, flags, rc):
         if rc == 0:
             print("Connected with result code " + str(rc))
             client.subscribe("RSD24bits/#")
@@ -73,254 +67,237 @@ def Mqtt(wave, clientID, map_chunk_sta):
             client.disconnect()
 
     # 接收訊息（接收到 PUBLISH）的回呼函數
-    def on_message(client, userdata, msg):
-        # 0.0001 s on average
-        try:
-            message = str(msg.payload.decode("utf-8"))
-            message = json.loads(message)
-            # print('(on_message)mqttmsg: ', datetime.fromtimestamp(message['startt']).strftime('%Y/%m/%d,%H:%M:%S'))
-            # print('(on_message)current time: ', datetime.fromtimestamp(time.time()).strftime('%Y/%m/%d,%H:%M:%S'))
-            sta = message['station']
-            if sta in map_chunk_sta:
-                buffer_no = map_chunk_sta[sta]
-            else:
-                buffer_no = 2
-                
-            wave[buffer_no].put(message)
-            # if buffer_no == 0:
-            #     print('putting: ', wave[0].qsize(), time.time(), sta, message['channel'], message['startt'])
-        except Exception as e:
-            print('on message: ', e)
+    def on_message(self, client, userdata, msg):
+        # 0.0003 s on average
 
-    def on_disconnect(client, userdata, rc):
+        # parse the package
+        msg = msg.payload
+        network, station, location, channel, nsamp, samprate, starttime, endtime = struct.unpack(f"<2s5s2s3sIddd", msg[0:40])
+        network = network.decode().strip()
+        station = station.decode().strip()
+        location = location.decode().strip()
+        channel = channel.decode().strip()
+        scnl = f"{station}_{channel}_{network}_{location}"
+        data = np.array(struct.unpack(f"<{nsamp:d}i", msg[40:]), dtype=np.int32)
+        
+        # check the station is in the partial station list
+        # if int(self.env_config["CHUNK"]) != -1:
+        #     if station not in self.partial_station_list:
+        #         return 
+
+        # update the key_index
+        if scnl not in self.key_index:
+            if scnl not in self.key_index:
+                self.key_index[scnl] = int(self.key_cnt.value)
+                self.key_cnt.value += 1
+
+        # append the data in package into shared waveform buffer
+        startIndex = int(starttime*self.env_config['SAMP_RATE']) - int(self.waveform_buffer_start_time.value)
+            
+        data = data.copy().astype(np.float32)
+        self.waveform_buffer[self.key_index[scnl]][startIndex:startIndex+nsamp] = torch.from_numpy(data)
+        
+        # send information to module for calculating Pa, Pv, and Pd
+        if channel[-1] == 'Z':
+            msg_to_pavd = {scnl: data}
+            self.pavd_scnl.put(msg_to_pavd)
+    
+    def on_disconnect(self, client, userdata, rc):
         if rc != 0:
-            print(time.time())
             print("Unexpected disconnection: ", str(rc))
             # Optionally, add reconnection logic here
             client.reconnect()
     
-    def on_log(client, userdata, level, buf):
+    def on_log(self, client, userdata, level, buf):
         # print("log: ", buf)
         pass
 
-    # 建立 MQTT Client 物件
-    client = mqtt.Client(client_id=clientID)
-    # 設定建立連線回呼函數 (callback function)
-    client.on_connect = on_connect
+    def activate_mqtt(self):
+        # 建立 MQTT Client 物件
+        self.client = mqtt.Client()
+        # 設定建立連線回呼函數 (callback function)
+        self.client.on_connect = self.on_connect
 
-    # 設定接收訊息回呼函數
-    client.on_message = on_message
+        # 設定接收訊息回呼函數
+        self.client.on_message = self.on_message
 
-    client.on_disconnect = on_disconnect    
-    client.on_log = on_log
+        self.client.on_disconnect = self.on_disconnect    
+        self.client.on_log = self.on_log
 
-    # 連線至 MQTT 伺服器（伺服器位址,連接埠）, timeout=6000s
-    client.connect("140.118.127.89", 1883, 6000)
-    print("connect!")
-    # 進入無窮處理迴圈
-    client.loop_forever()
-    # client.loop_start()
+        # 連線至 MQTT 伺服器（伺服器位址,連接埠）, timeout=6000s
+        self.client.connect("140.118.127.89", 1883, 6000)
+        print("connect!")
+        
+        # 進入無窮處理迴圈
+        # self.client.loop_forever()
+        self.client.loop_start()
 
-def PavdModule_sender(CHECKPOINT_TYPE, pavd_calc, waveform_comein, waveform_comein_length, pavd_scnl, waveform_scnl):
-    
-    # Send information into first Pavd module if idle
-    while True:
+    def start(self):
         try:
-            w = pavd_scnl.get()
+            self.activate_mqtt()
 
-            if w == {}:
-                continue
+            time_mover = Process(target=TimeMover, args=(self.waveform_buffer, self.env_config, self.nowtime, self.waveform_buffer_start_time))
+            time_mover.start()
 
-            for k, v in w.items():
-                scnl = k
-                waveform = v
-                nsamp = 100
+            pavd_sender = Process(target=PavdModule_sender, args=(self.env_config['CHECKPOINT_TYPE'], self.pavd_calc, self.waveform_comein, self.waveform_comein_length, self.pavd_scnl, self.waveform_scnl))
+            pavd_sender.start()
 
+            picker = Process(target=Picker, args=(self.waveform_buffer, self.key_index, self.nowtime, self.waveform_buffer_start_time, self.env_config, self.key_cnt, self.stationInfo, self.device,
+                                                    self.waveform_save_picktime, (self.notify_tokens, self.waveform_tokens), self.waveform_save, self.waveform_save_res, self.waveform_save_prediction, 
+                                                    self.waveform_save_TF, self.save_info, self.waveform_save_waveform_starttime, self.logfilename_pick, self.logfilename_original_pick, self.logfilename_notify, self.logfilename_cwb_pick, self.upload_TF, 
+                                                    self.restart_cond, self.keep_wave_cnt, self.remove_daily, self.waveform_plot_TF, self.plot_info, self.waveform_plot_wf, self.waveform_plot_out, self.waveform_plot_picktime, self.plot_time,
+                                                    self.notify_TF, self.toNotify_pickedCoord, self.n_notify, self.picked_waveform_save_TF, self.scnl, self.avg_pickingtime, self.median_pickingtime, self.n_pick, self.logfilename_stat, self.pick_stat_notify,
+                                                    self.pavd_sta))
+            picker.start()
+
+            pavd_processes = []
             for i in range(7):
-                if pavd_calc[i].value == 0:
-                    waveform_scnl[i].value = scnl
-                    waveform_comein[i][0][:nsamp] = torch.from_numpy(waveform)
-                    waveform_comein_length[i].value += nsamp   
-                    pavd_calc[i].value += 1    
+                pavd_calculator = Process(target=Pavd_calculator, args=(self.pavd_calc[i], self.waveform_comein[i], self.waveform_scnl[i], self.waveform_comein_length[i], self.pavd_sta, self.stationInfo, self.env_config))
+                pavd_calculator.start()
+                pavd_processes.append(pavd_calculator)
 
-                    break     
-        except Exception as e:
-            # log the pending 
-            cur = datetime.fromtimestamp(time.time())
-            picking_logfile = f"./log/exception/{CHECKPOINT_TYPE}_{cur.year}-{cur.month}-{cur.day}.log"
-            with open(picking_logfile,"a") as pif:
-                pif.write('='*25)
-                pif.write('\n')
-                pif.write(f"Time -> {cur.strftime('%Y-%m-%d %H:%M:%S.%f')}\n")
-                pif.write(f"Error message (PavdModule_sender): {e}\n")
-                pif.write(f"Trace back (PavdModule_sender): {traceback.format_exc()}\n")
-                pif.write('='*25)
-                pif.write('\n')
-                pif.close()
-            pass
+            notifier = Process(target=Notifier, args=(self.notify_TF, self.toNotify_pickedCoord, self.notify_tokens, self.n_notify, int(self.env_config['CHUNK']), self.env_config['CHECKPOINT_TYPE']))
+            notifier.start()
 
-# to save wave form from WAVE_RING
-def WaveSaver(wave, env_config, waveform_buffer, key_index, nowtime, waveform_buffer_start_time, key_cnt, stationInfo, restart_cond,
-                pavd_scnl, n):
-    print('Starting WaveSaver...')
+            wave_shower = Process(target=Shower, args=(self.waveform_plot_TF, self.plot_info, self.waveform_plot_wf, self.waveform_plot_out, self.waveform_plot_picktime, self.waveform_tokens, self.env_config['CHECKPOINT_TYPE']))
+            wave_shower.start()
 
-    # 將所有測站切分成好幾個 chunks, 再取其中一個 chunk 作為預測的測站
-    partial_station_list = None
-    if int(env_config["CHUNK"]) != -1:
-        partial_station_list, _ = station_selection(sel_chunk=int(env_config["CHUNK"]), station_list=stationInfo, opt=env_config['SOURCE'], build_table=False, n_stations=int(env_config["N_PREDICTION_STATION"]))
+            uploader = Process(target=Uploader, args=(self.logfilename_pick, self.logfilename_notify, self.logfilename_original_pick, self.logfilename_cwb_pick, self.logfilename_stat, self.env_config['TRC_PATH'], self.upload_TF, self.avg_pickingtime, self.median_pickingtime, self.n_pick, self.cwb_avg_pickingtime, self.cwb_median_pickingtime, self.cwb_n_pick, self.calc_cwbstat, self.env_config['CHECKPOINT_TYPE'], self.pick_stat_notify))
+            uploader.start()            
 
-    # 如果是 TSMIP，額外再做分區，並把分區結果存下來
-    if env_config['SOURCE'] == 'TSMIP' and int(env_config['CHUNK']) != -1:
-        partial_station_list = ForTSMIP_station_selection(stationInfo, int(env_config["N_PREDICTION_STATION"]))
+            remover = Process(target=Remover, args=(self.remove_daily, self.env_config['WAVE_EXPIRED'], self.env_config['CHECKPOINT_TYPE']))
+            remover.start()
 
-    # channel mapping for tankplayer
-    channel_dict = {}
-    for i in range(1, 10):
-        if i >= 1 and i <= 3:
-            channel_dict[f"Ch{i}"] = 'FBA'
-        elif i >= 4 and i <= 6:
-            channel_dict[f"Ch{i}"] = 'SP'
-        else:
-            channel_dict[f"Ch{i}"] = 'BB'
-    channel = ['HH', 'EH', 'HL']
-    component = ['Z', 'N', 'E']
-    for chn in channel:
-        for com in component:
-            if chn == 'HH':
-                channel_dict[f"{chn}{com}"] = 'BB'
-            elif chn == 'EH':
-                channel_dict[f"{chn}{com}"] = 'SP'
-            elif chn == 'HL':
-                channel_dict[f"{chn}{com}"] = 'FBA'
+            time_mover.join()
+            pavd_sender.join()
+            picker.join()
+            notifier.join()
+            wave_shower.join()
+            uploader.join()
+            remover.join()
 
-    location_dict = {}
-    location_dict['10'] = '01'
-    location_dict['20'] = '02'
-
-    # 記錄系統 year, month, day, hour, minute, second，如果超過 30 秒以上沒有任何波形進來，則清空所有 buffer，等到有波形後，系統重新 pending 120s，等於是另類重啟
-    system = datetime.fromtimestamp(time.time())
-    cur = datetime.fromtimestamp(time.time())
-    
-    channel = ['HL'+chn for chn in ['Z', 'N', 'E']]
-    location = '--'
-    network = 'TW'
-    
-    if n == 0:
-        init_record = []
-        for k in tqdm(stationInfo.keys(), total=len(stationInfo)):
-            if partial_station_list is not None:
-                if k not in partial_station_list:
-                    continue
-            for c in channel:
-                scnl = f"{k}_{c}_{network}_{location}"
-                
-                key_index[scnl] = int(key_cnt.value)
-                key_cnt.value += 1
-    
-    cnt = 0
-    while True:
-        cnt += 1
-        if wave.qsize() == 0:
-            continue
-        starttt = time.time()
-        mqttmsg = wave.get()
-        if n == 0:
-            t10 = time.time()-starttt
-        if mqttmsg == {}:
-            continue
-        start = time.time()
-        # if n == 0:
-        #     print(f"{n} getting: ", wave.qsize(), time.time(), mqttmsg['station'], mqttmsg['channel'], mqttmsg['startt'])
-        # if mqttmsg['startt'] <= time.time()-5:
-        #     continue
-        
-        # 記錄目前 year, month, day, hour, minute, second，如果超過 30 秒以上沒有任何波形進來，則清空所有 buffer，等到有波形後，系統重新 pending 120s，等於是另類重啟
-        # 0.001s for every package
-        # cur = datetime.fromtimestamp(time.time())
-        # if (cur-system).seconds > 30:
-        #     # restart the system
-        #     restart_cond.value += 1
-        
-        # system = cur
-
-        if env_config['SOURCE'] == 'tankplayer':
-            # wave_scnl = f"{wave['station']}_{channel_dict[wave['channel']]}_{wave['network']}_{location_dict[wave['location']]}" # open when using tankplayer
-            wave_scnl = f"{mqttmsg['station']}_{channel_dict[mqttmsg['channel']]}_{mqttmsg['network']}_{mqttmsg['location']}" # open when using tankplayer
-        else:
-            mqttmsg_scnl = None
-        
-        # keep getting mqttmsg until the mqttmsg isn't empty
-        if int(env_config["CHUNK"]) != -1:
-            if (mqttmsg['station'] not in partial_station_list and (env_config['SOURCE'] == 'Palert' or env_config['SOURCE'] == 'CWB' or env_config['SOURCE'] == 'TSMIP')) or \
-                            ((env_config['SOURCE'] == 'tankplayer') and (mqttmsg_scnl not in partial_station_list)):
-                continue
-        if n == 0:
-            t1 = time.time()-start
-        start = time.time()
-        station = mqttmsg['station']
-        channel = mqttmsg['channel']
-        network = mqttmsg['network']
-        location = mqttmsg['location']
-        startt = mqttmsg['startt']
-        nsamp = mqttmsg['nsamp']
-        
-        scnl = f"{station}_{channel}_{network}_{location}"
-        
-        # print(scnl)
-        # The input scnl hasn't been saved before
-        if n == 0 and scnl not in init_record:
-            if scnl not in key_index:
-                key_index[scnl] = int(key_cnt.value)
-                key_cnt.value += 1
-
-            # initialize the scnl's mqttmsgform with shape of (1,6000) and fill it with 0
-            waveform_buffer[int(key_cnt.value)] = torch.zeros((1, int(env_config["STORE_LENGTH"])))
-            init_record.append(scnl)
-
-        # find input time's index to save it into waveform accouding this index
-        startIndex = int(startt*100) - int(waveform_buffer_start_time.value)
-
-        if station == 'H020':
-            print('mqttmsg: [', datetime.fromtimestamp(startt).strftime('%Y/%m/%d,%H:%M:%S'))
-            print('current time: ', datetime.fromtimestamp(time.time()).strftime('%Y/%m/%d,%H:%M:%S'))
-        
-        if startIndex < 0:
-            continue
-        
-        # save wave into waveform from starttIndex to its wave length
-        ttt = time.time()
-        try:
-            start = time.time()
-            new_data = np.array(mqttmsg['data'])
-           
-            waveform_buffer[key_index[scnl]][startIndex:startIndex+nsamp] = torch.from_numpy(new_data.copy().astype(np.float32))
-            if n == 0:
-                t6 = time.time()-start
-            start = time.time()
-            # sending information into Pavd_module
-            if channel[-1] == 'Z':
-                msg_to_pavd = {f"{station}_{channel}_{network}_{location}": new_data.copy().astype(np.float32)}
-                pavd_scnl.put(msg_to_pavd)
-            if n == 0:
-                t7 = time.time()-start
-        except Exception as e:
-            if station == 'H020':
-                print(n, e)        
-            continue
+            for w in pavd_processes:
+                w.join()
             
-        if n == 0:
-            t100 = time.time()-ttt
-        # if n == 0 and time.time()-starttt >= 0.01 and channel[-1] == 'Z':
-        #     print('WaveSaver per iteration: ', time.time()-starttt)
-        #     print("before init_record: ", t1)
-        #     print('append to waveform buffer: ', t6)
-        #     print('pavd: ', t7)
-        #     print('get msg: ', t10, station)
-        #     print("try catch: ", t100)
-        #     print('total: ', t1+t6+t7+t10)
-        #     print('cnt = : ', cnt)
-        #     print('-='*50)
-        cnt = 0
+        except KeyboardInterrupt:
+            for w in wavesaver:
+                w.terminate()
+                w.join()
+
+    def init_shared_params(self):
+        self.n_buffer = 1
+
+        # create multiprocessing manager to maintain the shared variables
+        manager = Manager()
+        self.queue = [manager.Queue(maxsize=50000) for _ in range(self.n_buffer)]
+        self.env_config = manager.dict()
+        for k, v in dotenv_values(".env").items():
+            self.env_config[k] = v
+
+        # device
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  
+
+        # get the candidate line notify tokens
+        self.notify_tokens, self.waveform_tokens = load_tokens(self.env_config['NOTIFY_TOKENS'], self.env_config['WAVEFORM_TOKENS'])
+        
+        # get the station's info
+        if self.env_config['SOURCE'] == 'Palert':
+            self.stationInfo = get_PalertStationInfo(self.env_config['PALERT_FILEPATH'])
+        elif self.env_config['SOURCE'] == 'CWB':
+            self.stationInfo = get_CWBStationInfo(self.env_config['STAEEW_FILEPATH'])
+            # stationInfo = get_StationInfo(self.env_config['NSTA_FILEPATH'], (datetime.utcfromtimestamp(time.time()) + timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S.%f'))
+        elif self.env_config['SOURCE'] == 'TSMIP':
+            self.stationInfo = get_TSMIPStationInfo(self.env_config['TSMIP_FILEPATH'])
+        else:
+            self.stationInfo = get_StationInfo(self.env_config['NSTA_FILEPATH'], (datetime.utcfromtimestamp(time.time()) + timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S.%f'))
+
+        # restart the system in process
+        self.restart_cond = Value('d', int(0))
+
+        if int(self.env_config['CHUNK']) == -1:
+            n_stations = len(self.stationInfo)
+        else:
+            n_stations = int(self.env_config["N_PREDICTION_STATION"])
+
+        # a deque from time-3000 to time for time index
+        self.nowtime = Value('d', int(time.time()*100))
+        self.waveform_buffer_start_time = Value('d', self.nowtime.value-3000)
+
+        # a counter for accumulating key's count
+        self.key_cnt = Value('d', int(0))
+
+        # a dict for checking scnl's index of waveform
+        self.key_index = manager.dict()
+      
+        self.waveform_buffer = torch.zeros((n_stations*6, int(self.env_config["STORE_LENGTH"]))).share_memory_()
+
+        # parameters for WaveKeeper
+        self.waveform_save = torch.empty((n_stations, 3, int(self.env_config['PREDICT_LENGTH']))).share_memory_()
+        self.waveform_save_prediction = torch.empty((n_stations, int(self.env_config['PREDICT_LENGTH']))).share_memory_()
+        self.waveform_save_res = torch.empty((n_stations,)).share_memory_()
+        self.waveform_save_picktime = torch.empty((n_stations,)).share_memory_()
+        self.waveform_save_TF = Value('d', int(0))
+        self.waveform_plot_TF = Value('d', int(0))
+        self.waveform_save_waveform_starttime = manager.Value(c_char_p, 'Hello')
+        self.plot_time = manager.Value(c_char_p, 'Hello')
+        self.save_info = manager.dict()
+
+        # parameters for Shower
+        self.plot_info = manager.Value(c_char_p, 'hello')
+        self.waveform_plot_wf = torch.empty((1, 3, int(self.env_config['PREDICT_LENGTH']))).share_memory_()
+        self.waveform_plot_out = torch.empty((1, int(self.env_config['PREDICT_LENGTH']))).share_memory_()
+        self.waveform_plot_picktime = Value('d', int(0))
+
+        # parameters for uploader
+        self.logfilename_pick = manager.Value(c_char_p, 'hello')
+        self.logfilename_notify = manager.Value(c_char_p, 'hello')
+        self.logfilename_original_pick = manager.Value(c_char_p, 'hello')
+        self.logfilename_cwb_pick = manager.Value(c_char_p, 'hello')
+        self.logfilename_stat = manager.Value(c_char_p, 'hello')
+        self.upload_TF = Value('d', int(0))
+        self.avg_pickingtime = Value('d', int(0))
+        self.median_pickingtime = Value('d', int(0))
+        self.keep_wave_cnt = Value('d', int(0))
+        self.n_pick = Value('d', int(0))
+        self.pick_stat_notify = Value('d', int(0))
+        self.cwb_avg_pickingtime = Value('d', int(0))
+        self.cwb_median_pickingtime = Value('d', int(0))
+        self.cwb_n_pick = Value('d', int(0))
+        self.calc_cwbstat = Value('d', int(0))
+
+        # parameters for notifier
+        self.notify_TF = Value('d', int(0))
+        self.toNotify_pickedCoord = manager.dict()
+        self.n_notify = Value('d', int(0))
+
+        # parameters for remover
+        self.remove_daily = Value('d', int(0))
+
+        # parameters for pickwaveform_saver
+        self.picked_waveform_save_TF = Value('d', int(0))
+        self.scnl = manager.dict()
+
+        # parameters for CWB pickwaveform_saver
+        self.cwb_picked_waveform_save_TF = Value('d', int(0))
+        self.cwb_scnl = manager.dict()
+
+        # parameters for Pavd_calculator
+        self.pavd_sta = manager.dict()
+
+        self.pavd_calc = [Value('d', int(0)) for _ in range(7)]
+        self.waveform_comein = [torch.empty((1, 500)).share_memory_() for _ in range(7)]
+        self.waveform_comein_length = [Value('d', int(0)) for _ in range(7)]
+        self.waveform_scnl = [manager.Value(c_char_p, 'hello') for _ in range(7)]
+        self.pavd_scnl = manager.Queue()
+
+    def station_chunk(self):
+        self.partial_station_list = None
+        if int(self.env_config["CHUNK"]) != -1:
+            # 如果是 TSMIP，額外再做分區，並把分區結果存下來
+            if self.env_config['SOURCE'] == 'TSMIP' and int(self.env_config['CHUNK']) != -1:
+                self.partial_station_list = ForTSMIP_station_selection(self.stationInfo, int(self.env_config["N_PREDICTION_STATION"]))
+
+            self.partial_station_list, _ = station_selection(sel_chunk=int(self.env_config["CHUNK"]), station_list=self.stationInfo, opt=self.env_config['SOURCE'], build_table=False, n_stations=int(self.env_config["N_PREDICTION_STATION"]))
 
 def TimeMover(waveform_buffer, env_config, nowtime, waveform_buffer_start_time):
     print('Starting TimeMover...')
@@ -471,36 +448,12 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
 
                 system_year, system_month, system_day = cur.year, cur.month, cur.day
 
-            if restart_cond.value == 1:
-                wave_token_number = random.sample(range(len(waveform_tokens)), k=1)[0]
-                # wave_token_number = interrupt_notify(waveform_tokens, wave_token_number)
-
-                # 因為即時資料中斷超過 30 秒，所以重新等待 120 seconds，等 WaveSaver 搜集波形
-                print('pending...')
-                for _ in tqdm(range(int(env_config['SLEEP_SECOND']))):
-                    time.sleep(1)
-
-                # log the pending 
-                cur = datetime.fromtimestamp(time.time())
-                picking_logfile = f"./log/picking/{env_config['CHECKPOINT_TYPE']}_{cur.year}-{cur.month}-{cur.day}_picking_chunk{env_config['CHUNK']}.log"
-                with open(picking_logfile,"a") as pif:
-                    pif.write('='*25)
-                    pif.write('\n')
-                    pif.write('Real-time data interrupted 30 seconds or longer, picker pending for WaveSaver.\n')
-                    pif.write('='*25)
-                    pif.write('\n')
-                    pif.close()
-
-                restart_cond.value *= 0
-            
             isPlot = False
             cur_waveform_starttime = datetime.utcfromtimestamp(waveform_buffer_start_time.value/100)
             cur_waveform_buffer, cur_key_index = waveform_buffer.clone(), key_index.copy()
 
             # skip if there is no waveform in buffer or key_index is collect faster than waveform
             if int(key_cnt.value) == 0 or key_cnt.value < len(key_index):
-                # print(key_index)
-                # print(key_cnt.value, len(key_index))
                 continue
 
             # collect the indices of stations that contain 3-channel waveforms
@@ -736,7 +689,7 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
                             pick_time = datetime.utcfromtimestamp(float(tmp[-5]))
                             pif.write(f",\tp arrival time-> {pick_time.strftime('%Y-%m-%d %H:%M:%S.%f')}\n")
                             pif.write(f"{msg}\n")
-                            report(msg , 'EQTransformer')
+                            # report(msg , 'EQTransformer')
                         pif.close()
                         
                     # send signal for Notifier to send Line notify
@@ -748,62 +701,12 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
                         # plot the waveform and the prediction
                         isPlot = True
 
-                # send signal to pickWaveformSaver
-                new_pred_trigger, new_toPredict_scnl = gen_toPending_waveform_trigger(res, pred_trigger, toPredict_scnl, P_weight, int(env_config['REPORT_P_WEIGHT']))
-                if picked_waveform_save_TF.value == 0.0:
-                    for idx, pick_sample in enumerate(new_pred_trigger):
-                        sec, microsec = pick_sample // 100, pick_sample % 100
-                        buffer_start_time_offset = int(env_config['STORE_LENGTH']) // 2 - int(env_config['PREDICT_LENGTH'])
-                        buffer_start_time_offset_sec, buffer_start_time_offset_microsec = buffer_start_time_offset // 100.0, buffer_start_time_offset % 100.0
-                                        
-                        p_arrival_time = cur_waveform_starttime + timedelta(seconds=float(sec), microseconds=float(microsec)*10000) + \
-                                            timedelta(seconds=float(buffer_start_time_offset_sec), microseconds=float(buffer_start_time_offset_microsec)*10000)
-                        scnl[new_toPredict_scnl[idx]] = p_arrival_time
-
-                    picked_waveform_save_TF.value += len(new_pred_trigger)
-
                 # 將 picked stations 的 picking time 加進 pick_stat 做統計
                 pick_stat += new_pred_trigger
 
                 # 將 picked stations 的 picking time 加進 pick_stat 做統計
                 if len(new_pred_trigger) >= int(env_config["REPORT_NUM_OF_TRIGGER"]):
                     pick_stat_notify.value += len(new_pred_trigger)
-
-                # Let's save the trace!
-                if int(env_config['NOISE_KEEP']) != 0:
-                    if waveform_save_TF.value == 0:
-                        # if there is no picked station, then don't plot
-                        if not np.any(original_res):
-                            continue
-                        
-                        idx = np.arange(len(original_res))
-                        tri_idx = idx[np.logical_and(original_res, nonzero_flag).tolist()]
-                        
-                        # # clean the save_info
-                        for k in save_info.keys():
-                            save_info.pop(k)
-
-                        for iiddxx, tri in enumerate(tri_idx):
-                            save_info[iiddxx] = original_pick_msg[iiddxx]
-                            waveform_save[iiddxx] = original_wave[tri].cpu()
-                            waveform_save_prediction[iiddxx] = out[tri].detach()
-
-                        # nonzero_flag: 原始波形中有 0 的值為 False, 不要讓 Shower & Keeper 存波形
-                        waveform_save_res[:len(original_res)] = torch.tensor(np.logical_and(original_res, nonzero_flag).tolist())
-                        waveform_save_waveform_starttime.value = cur_waveform_starttime.strftime('%Y-%m-%d %H:%M:%S.%f')
-                        waveform_save_picktime[:len(original_res)] = torch.tensor(pred_trigger)
-                
-                        cur_plot_time = datetime.fromtimestamp(time.time())
-                        if plot_time.value != 'Hello':
-                            tmp_plot_time = datetime.strptime(plot_time.value, '%Y-%m-%d %H:%M:%S.%f')
-                        if keep_wave_cnt.value < int(env_config['KEEP_WAVE_DAY']) or (plot_time.value == "Hello"):
-                            if plot_time.value == "Hello":
-                                waveform_save_TF.value += 1
-                            else:
-                                if cur_plot_time > tmp_plot_time:
-                                    diff = cur_plot_time - tmp_plot_time
-                                    if diff.total_seconds() >= 60:
-                                        waveform_save_TF.value += 1
 
                 # Let's send line notify for one of the picked stations
                 if isPlot:
@@ -843,10 +746,10 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
             prev_key_index = cur_key_index
 
             # pending until 1 second
-            # while True:
-            #     cur = time.time()
-            #     if cur - system_record_time >= 0.9:
-            #         break
+            while True:
+                cur = time.time()
+                if cur - system_record_time >= 0.75:
+                    break
 
         except Exception as e:
             # log the pending 
@@ -980,296 +883,6 @@ def Shower(waveform_plot_TF, plot_info, waveform_plot_wf, waveform_plot_out, wav
             waveform_plot_TF.value *= 0
             continue
 
-# keeping
-def WaveKeeper(waveform_save, waveform_save_res, waveform_save_prediction, waveform_save_TF, save_info, waveform_save_waveform_starttime, waveform_save_picktime, keep_wave_cnt, plot_time, keep_P_weight, CHECKPOINT_TYPE):    
-    print('Starting WaveKeeper...')
-
-    while True:
-        # don't save the trace, keep pending ...
-        if waveform_save_TF.value == 0.0:
-            continue
-            
-        cur_waveform_save_res = waveform_save_res.clone()
-        waveform_starttime = waveform_save_waveform_starttime.value
-        waveform_starttime = "_".join("_".join(waveform_starttime.split(':')).split('.'))
-        cur_waveform_save_picktime = waveform_save_picktime.clone()
-
-        # A directory a week
-        tmp = waveform_starttime.split(' ')[0].split('-')
-        year, month, day = tmp[0], tmp[1], tmp[2]
-      
-        day = int(day)
-        if day <= 7:
-            dirname = f"{CHECKPOINT_TYPE}_{year}_{month}_week1_noise_check"
-        elif day <= 14 and day > 7:
-            dirname = f"{CHECKPOINT_TYPE}_{year}_{month}_week2_noise_check"
-        elif day <= 21 and day > 14:
-            dirname = f"{CHECKPOINT_TYPE}_{year}_{month}_week3_noise_check"
-        elif day > 21:
-            dirname = f"{CHECKPOINT_TYPE}_{year}_{month}_week4_noise_check"
-        
-        if not os.path.exists(f"./plot/{dirname}"):
-            os.makedirs(f"./plot/{dirname}")
-        if not os.path.exists(f"./trace/{dirname}"):
-            os.makedirs(f"./trace/{dirname}")
-
-        try:
-            cnt = 0
-            save_plot_cnt = 0
-           
-            for idx, res in enumerate(cur_waveform_save_res):
-                # chech the station is picked
-                if res == 1:
-                    tmp = save_info[cnt].split(' ')
-                    
-                    # if p_weight smaller than 2, then dont't save
-                    if int(tmp[11]) <= int(keep_P_weight) or cur_waveform_save_picktime[idx] > 750:
-                        cnt += 1
-                        continue
-                    
-                    # save waveform into pytorch tensor
-                    scnl = "_".join(tmp[:4])
-                    savename = f"{waveform_starttime}_{scnl}.pt"
-                    wf = waveform_save[cnt]
-                    pred = waveform_save_prediction[cnt]
-
-                    output = {}
-                    output['trace'] = wf
-                    output['pred'] = pred
-
-                    pt_filename = f"./trace/{dirname}/{savename}"
-                    torch.save(output, pt_filename)
-
-                    # save waveform into png files
-                    savename = f"{waveform_starttime}_{scnl}"
-                    png_filename = f"./plot/{dirname}/{savename}.png"
-                    
-                    # png title
-                    first_title = "_".join(tmp[:6])
-                    second_title = "_".join(tmp[6:10])
-                    p_arrival = datetime.utcfromtimestamp(float(tmp[10])).strftime('%Y-%m-%d %H:%M:%S.%f')
-                    other_title = "_".join(tmp[11:])
-                    title = f"{first_title}\n{second_title}\n{p_arrival}\n{other_title}"
-
-                    # plot the waveform without zero
-                    wf = waveform_save
-
-                    plt.figure(figsize=(12, 18))
-                    plt.rcParams.update({'font.size': 18})
-                
-                    plt.subplot(411)
-                    plt.plot(tmp[0])
-                    plt.axvline(x=cur_waveform_save_picktime[idx], color='r')
-                    plt.title(title)
-                    
-                    plt.subplot(412)
-                    plt.plot(tmp[1])
-                    plt.axvline(x=cur_waveform_save_picktime[idx], color='r')
-
-                    plt.subplot(413)
-                    plt.plot(tmp[2])
-                    plt.axvline(x=cur_waveform_save_picktime[idx], color='r')
-
-                    plt.subplot(414)
-                    plt.ylim([-0.05, 1.05])
-                    plt.axvline(x=cur_waveform_save_picktime[idx], color='r')
-                    plt.plot(waveform_save_prediction[cnt])
-                    
-                    plt.savefig(png_filename)
-                    plt.clf()
-                    plt.close('all')
-
-                    save_plot_cnt += 1
-                    cnt += 1
-            
-            # 這個事件沒有任何 p_weight >= 2，所以資料夾為空，刪除
-            if save_plot_cnt == 0:
-                pass
-            else:
-                keep_wave_cnt.value += 1
-                plot_time.value = datetime.fromtimestamp(time.time()).strftime('%Y-%m-%d %H:%M:%S.%f')
-
-        except Exception as e:
-            # log the pending 
-            cur = datetime.fromtimestamp(time.time())
-            picking_logfile = f"./log/exception/{CHECKPOINT_TYPE}_{cur.year}-{cur.month}-{cur.day}.log"
-            with open(picking_logfile,"a") as pif:
-                pif.write('='*25)
-                pif.write('\n')
-                pif.write(f"Time -> {cur.strftime('%Y-%m-%d %H:%M:%S.%f')}\n")
-                pif.write(f"Error message (Keeper): {e}\n")
-                pif.write(f"Trace back (Keeper): {traceback.format_exc()}\n")
-                pif.write('='*25)
-                pif.write('\n')
-                pif.close()
-            
-            continue
-        
-        waveform_save_TF.value *= 0
-
-# pending waveform for picked stations until the signal is long enough to manually check
-def PickedWaveformSaver(env_config, scnl, picked_waveform_save_TF, waveform_buffer, key_index, waveform_buffer_start_time, stationInfo, CHECKPOINT_TYPE):
-    print('Starting PickedWaveformSaver...')
-
-    # bandpass filter
-    _filt_args = (5, [1, 10], 'bandpass', False)
-    sos = scipy.signal.butter(*_filt_args, output="sos", fs=100.0)
-
-    save_dict = {}
-    while True:
-        # don't save the trace, keep pending ...
-        if picked_waveform_save_TF.value == 0.0 and len(save_dict) == 0:
-            continue
-
-        # activate the process
-        cur_waveform_buffer, cur_key_index = waveform_buffer.clone(), key_index.copy()
-        waveform_starttime = datetime.utcfromtimestamp(waveform_buffer_start_time.value/100)
-
-        # A directory a week
-        cur = datetime.fromtimestamp(time.time())
-        year, month, day = int(cur.year), int(cur.month), int(cur.day)
-        if day <= 7:
-            dirname = f"{CHECKPOINT_TYPE}_{year}_{month}_week1_picked_check"
-        elif day <= 14 and day > 7:
-            dirname = f"{CHECKPOINT_TYPE}_{year}_{month}_week2_picked_check"
-        elif day <= 21 and day > 14:
-            dirname = f"{CHECKPOINT_TYPE}_{year}_{month}_week3_picked_check"
-        elif day > 21:
-            dirname = f"{CHECKPOINT_TYPE}_{year}_{month}_week4_picked_check"
-        
-        if not os.path.exists(f"./plot/{dirname}"):
-            os.makedirs(f"./plot/{dirname}")
-            os.makedirs(f"./plot/{dirname}/seismic")
-            os.makedirs(f"./plot/{dirname}/noise")
-
-        try:
-            # append new picked station in to save_dict
-            # print('picked_waveform_save_TF: ', picked_waveform_save_TF.value)
-            if picked_waveform_save_TF.value != 0.0:
-                for k, v in scnl.items():
-                    if k not in save_dict:
-                        save_dict[k] = v
-
-            # print('save_dict(pickedWaveform): ', save_dict)
-            
-            # delete the elements in scnl
-            keys = list(scnl.keys())
-            for k in keys:
-                del scnl[k]
-
-            # check whether the signal of picked stations exceed the specific length for saving
-            toPlot = {}
-            to_delete_key = []
-            for k, v in save_dict.items():
-                # if v[0] and v[1] > int(env_config['PICK_WAVESAVER_SAMPLE_TO_PLOT']):
-                timediff = (v-waveform_starttime)
-                # if int(env_config['PREDICT_LENGTH'])//100 - timediff.seconds >= int(env_config['PICK_WAVESAVER_SECOND_TO_PLOT']):
-                if 3000//100 - timediff.seconds >= int(env_config['PICK_WAVESAVER_SECOND_TO_PLOT']):
-                    toPlot[k] = timediff.seconds*100+timediff.microseconds//10000
-                    to_delete_key.append(k)
-                if timediff.days < 0:
-                    to_delete_key.append(k)
-                        
-            # print('toPlot: ', toPlot)
-            # plot the waveform 
-            if len(toPlot) > 0:
-                for plot_scnl, pick_sample in toPlot.items():
-                    # change the channel code to build the scnl, and accessing the waveform buffer by new scnl
-                    tmp = plot_scnl.split('_')
-                    if tmp[1][:2] == 'Ch':
-                        wave_index = [cur_key_index[f"{tmp[0]}_Ch{i}_{tmp[2]}_{tmp[-1]}"] for i in range(int(tmp[1][-1]), int(tmp[1][-1])+3)] 
-                    elif tmp[1][-1] == 'Z':
-                        wave_index = [cur_key_index[f"{tmp[0]}_{tmp[1][:2]}{i}_{tmp[2]}_{tmp[-1]}"] for i in ['Z', 'N', 'E']] 
-                    # print('wave_index: ', wave_index)
-                    # save the figure
-                    cur_date = datetime.fromtimestamp(time.time()).strftime('%Y_%m_%d_%H_%M_%S_%f')
-                    savename = f"{cur_date}_{plot_scnl}"
-                    png_filename = f"./plot/{dirname}/{savename}.png"
-                    # print('png_filename: ', png_filename)
-
-                    # access the buffer and preprocess
-                    # toPlot_waveform = cur_waveform_buffer[wave_index][:, :int(env_config['PREDICT_LENGTH'])].clone()
-                    toPlot_waveform = cur_waveform_buffer[wave_index][:, :3000].clone()
-                    # get the factor and coordinates of stations
-                    if env_config['SOURCE'] == 'Palert' or env_config['SOURCE'] == 'CWB' or env_config['SOURCE'] == 'TSMIP':
-                        station_factor_coords, station_list, flag = get_Palert_CWB_coord([plot_scnl], stationInfo)
-
-                        # count to gal
-                        factor = np.array([f[-1] for f in station_factor_coords]).astype(float)
-                        toPlot_waveform = toPlot_waveform/factor[:, None, None]
-                    else:
-                        station_factor_coords, station_list, flag = get_coord_factor([plot_scnl], stationInfo)
-
-                        # multiply with factor to convert count to 物理量
-                        factor = np.array([f[-1] for f in station_factor_coords])
-                        toPlot_waveform = toPlot_waveform*factor[:, :, None]
-
-                    # toPlot_waveform = toPlot_waveform - torch.mean(toPlot_waveform, dim=-1, keepdims=True)
-                    # toPlot_waveform = toPlot_waveform / torch.std(toPlot_waveform, dim=-1, keepdims=True)
-
-                    # toPad_mean = torch.mean(toPlot_waveform, dim=-1)
-                    # for jjj in range(3):
-                    #     tmp = toPlot_waveform[0, jjj]
-                    #     tmp[tmp==0] = toPad_mean[0, jjj]
-                    #     toPlot_waveform[0, jjj] = tmp
-
-                    # toPlot_waveform = scipy.signal.sosfilt(sos, toPlot_waveform, axis=-1)
-                    
-                    # plot the waveform without zero
-                    mask = (toPlot_waveform==0)
-                    tmp = []
-                    for j in range(3):
-                        tmp.append(toPlot_waveform[0, j][~mask[0, j]])
-
-                    # png title
-                    title = savename
-
-                    plt.figure(figsize=(12, 18))
-                    plt.rcParams.update({'font.size': 18})
-                
-                    plt.subplot(311)
-                    plt.plot(tmp[0])
-                    plt.ylabel('gal (cm/s2)')
-                    plt.axvline(x=pick_sample, color='r')
-                    plt.title(title)
-                    
-                    plt.subplot(312)
-                    plt.plot(tmp[1])
-                    plt.ylabel('gal (cm/s2)')
-                    plt.axvline(x=pick_sample, color='r')
-
-                    plt.subplot(313)
-                    plt.plot(tmp[2])
-                    plt.ylabel('gal (cm/s2)')
-                    plt.axvline(x=pick_sample, color='r')
-
-                    plt.savefig(png_filename)
-                    plt.clf()
-                    plt.close('all')
-
-            # 把畫完的 scnl 刪掉
-            for k in to_delete_key:
-                del save_dict[k]
-
-            picked_waveform_save_TF.value *= 0
-        except Exception as e:
-            # log the pending 
-            # print(e)
-            cur = datetime.fromtimestamp(time.time())
-            picking_logfile = f"./log/exception/{CHECKPOINT_TYPE}_{cur.year}-{cur.month}-{cur.day}.log"
-            with open(picking_logfile,"a") as pif:
-                pif.write('='*25)
-                pif.write('\n')
-                pif.write(f"Time -> {cur.strftime('%Y-%m-%d %H:%M:%S.%f')}\n")
-                pif.write(f"Error message (PickedWaveformSaver): {e}\n")
-                pif.write(f"Trace back (PickedWaveformSaver): {traceback.format_exc()}\n")
-                pif.write('='*25)
-                pif.write('\n')
-                pif.close()
-
-            picked_waveform_save_TF.value *= 0
-            continue
-        
 # Upload to google drive
 def Uploader(logfilename_pick, logfilename_notify, logfilename_original_pick, logfilename_cwb_pick, logfilename_stat, trc_dir, upload_TF, 
             avg_pickingtime, median_pickingtime, n_pick, cwb_avg_pickingtime, cwb_median_pickingtime, cwb_n_pick, calc_cwbstat, CHECKPOINT_TYPE, pick_stat_notify):
@@ -1551,277 +1164,6 @@ def Remover(remove_daily, expired_day, CHECKPOINT_TYPE):
                 pif.close()
             remove_daily.value *= 0
 
-# collect the result of CWB traditional picker
-def CWBPicker(env_config, cwb_avg_pickingtime, cwb_median_pickingtime, cwb_n_pick, upload_TF, calc_cwbstat, cwb_picked_waveform_save_TF, cwb_scnl, CHECKPOINT_TYPE):
-    print('Starting CWBPicker...')
-
-    # MyModule = PyEW.EWModule(int(env_config["WAVE_RING_ID"]), int(env_config["PYEW_MODULE_ID"]), int(env_config["PYEW_INST_ID"]), 30.0, False)
-    MyModule = PyEW.EWModule(int(env_config["WAVE_RING_ID"]), int(env_config["PYEW_MODULE_ID"]), int(env_config["PYEW_INST_ID"]), 30.0, False)
-    MyModule.add_ring(int(env_config["PICK_RING_ID"])) # PICK_RING
-
-    # 記錄目前 year, month, day，用於刪除過舊的 log files
-    cur = datetime.fromtimestamp(time.time())
-    system_year, system_month, system_day = cur.year, cur.month, cur.day
-    system_hour, system_minute, system_second = cur.hour, cur.minute, cur.second
-
-    # 統計每日 picking time 
-    cwbpicker_stat = []
-
-    # 避免重複測站被記錄
-    record_stat = {}
-
-    while True:
-        try:
-            # 將昨日統計結果傳至 Uploader
-            if calc_cwbstat.value == 1.0:
-                if len(cwbpicker_stat) > 0:
-                    cwb_avg_pickingtime.value = np.mean(cwbpicker_stat)
-                    cwb_median_pickingtime.value = np.median(cwbpicker_stat)
-                    cwb_n_pick.value = len(cwbpicker_stat)
-                else:
-                    cwb_avg_pickingtime.value = 0
-                    cwb_median_pickingtime.value = 0
-                    cwb_n_pick.value = 0
-
-                calc_cwbstat.value *= 0
-                cwbpicker_stat = []
-
-            pick_msg = MyModule.get_bytes(0, int(env_config["PICK_MSG_TYPE"]))
-
-            # if there's no data and waiting list is empty
-            if pick_msg == (0, 0):
-                continue
-            # print("pick_msg",pick_msg)
-            pick_str = pick_msg[2][:pick_msg[1]].decode("utf-8").split(' ')
-
-            # select CWB picker
-            if int(pick_str[-2]) == 4:
-                continue
-
-            # get the filenames
-            cur = datetime.fromtimestamp(time.time())
-            cwb_picking_logfile = f"./log/CWBPicker/{CHECKPOINT_TYPE}_{cur.year}-{cur.month}-{cur.day}_picking.log"
-
-            # writing CWBPicker log file
-            with open(cwb_picking_logfile,"a") as pif:
-                if f"{cur.hour}_{cur.minute}_{cur.second}" != f"{system_hour}_{system_minute}_{system_second}":
-                    pif.write('='*25)
-                    pif.write(f"Report time: {cur.strftime('%Y-%m-%d %H:%M:%S.%f')}")
-                    pif.write('='*25)
-                    pif.write('\n')
-
-                pif.write(f"{' '.join(pick_str[:6])}")
-                pick_time = datetime.utcfromtimestamp(float(pick_str[10]))
-                pif.write(f",\tp arrival time-> {pick_time.strftime('%Y-%m-%d %H:%M:%S.%f')}")
-                
-                # write append information: Pa, Pv, Pd
-                pif.write(f"\n(Pa, Pv, Pd, Tc)=({pick_str[6]}, {pick_str[7]}, {pick_str[8]}, {pick_str[9]})\n")
-                pif.write(f"(p_weight, instrument, upd_sec)=({pick_str[11]}, {pick_str[12]}, {pick_str[13]})\n")
-                pif.write('\n\n')
-
-                pif.close()
-
-            # 統計之外，也通知 CWB_pickedWaveformSaver 準備存波形
-            # 統計 CWB picker picking time
-
-            # upd_sec = 2 一定是該測站第一次 picked
-            # 篩選 p-weight
-            if int(pick_str[13]) == 2 and int(pick_str[11]) <= int(env_config['REPORT_P_WEIGHT']):
-                cwbpicker_stat.append(2)
-                record_stat[pick_str[0]] = time.time()
-
-                cwb_scnl["_".join(pick_str[:4])] = pick_time
-                cwb_picked_waveform_save_TF.value += 1
-            elif int(pick_str[13]) == 3 and int(pick_str[11]) <= int(env_config['REPORT_P_WEIGHT']):
-                if pick_str[0] not in record_stat or time.time() - record_stat[pick_str[0]] > 4:
-                    cwbpicker_stat.append(3)
-                    record_stat[pick_str[0]] = time.time()
-
-                    cwb_scnl["_".join(pick_str[:4])] = pick_time
-                    cwb_picked_waveform_save_TF.value += 1
-
-            system_hour, system_minute, system_second = cur.hour, cur.minute, cur.second
-        
-        except Exception as e:
-            # log the pending 
-            # print(e)
-            cur = datetime.fromtimestamp(time.time())
-            picking_logfile = f"./log/exception/{CHECKPOINT_TYPE}_{cur.year}-{cur.month}-{cur.day}.log"
-            with open(picking_logfile,"a") as pif:
-                pif.write('='*25)
-                pif.write('\n')
-                pif.write(f"Time -> {cur.strftime('%Y-%m-%d %H:%M:%S.%f')}\n")
-                pif.write(f"Error message (CWBPicker): {e}\n")
-                pif.write(f"Trace back (CWBPicker): {traceback.format_exc()}\n")
-                pif.write('='*25)
-                pif.write('\n')
-                pif.close()
-            
-            continue
-
-# pending waveform for CWBPicker's picked stations until the signal is long enough to manually check
-def CWBPickedWaveformSaver(env_config, cwb_picked_waveform_save_TF, cwb_scnl, waveform_buffer, key_index, waveform_buffer_start_time, stationInfo, CHECKPOINT_TYPE):
-    print('Starting CWBPickedWaveformSaver...')
-
-    # bandpass filter
-    _filt_args = (5, [1, 10], 'bandpass', False)
-    sos = scipy.signal.butter(*_filt_args, output="sos", fs=100.0)
-
-    save_dict = {}
-    while True:
-        # don't save the trace, keep pending ...
-        if cwb_picked_waveform_save_TF.value == 0.0 and len(save_dict) == 0:
-            continue
-
-        # activate the process
-        cur_waveform_buffer, cur_key_index = waveform_buffer.clone(), key_index.copy()
-        waveform_starttime = datetime.utcfromtimestamp(waveform_buffer_start_time.value/100)
-
-        # A directory a week
-        cur = datetime.fromtimestamp(time.time())
-        year, month, day = int(cur.year), int(cur.month), int(cur.day)
-        if day <= 7:
-            dirname = f"{CHECKPOINT_TYPE}_{year}_{month}_week1_CWBpicked_check"
-        elif day <= 14 and day > 7:
-            dirname = f"{CHECKPOINT_TYPE}_{year}_{month}_week2_CWBpicked_check"
-        elif day <= 21 and day > 14:
-            dirname = f"{CHECKPOINT_TYPE}_{year}_{month}_week3_CWBpicked_check"
-        elif day > 21:
-            dirname = f"{CHECKPOINT_TYPE}_{year}_{month}_week4_CWBpicked_check"
-        
-        if not os.path.exists(f"./plot/{dirname}"):
-            os.makedirs(f"./plot/{dirname}")
-            os.makedirs(f"./plot/{dirname}/seismic")
-            os.makedirs(f"./plot/{dirname}/noise")
-
-        try:
-            # append new picked station in to save_dict
-            # print('picked_waveform_save_TF: ', picked_waveform_save_TF.value)
-            if cwb_picked_waveform_save_TF.value != 0.0:
-                for k, v in cwb_scnl.items():
-                    if k not in save_dict:
-                        save_dict[k] = v
-            
-            # delete the elements in cwb_scnl
-            keys = list(cwb_scnl.keys())
-            for k in keys:
-                del cwb_scnl[k]
-
-            # check whether the signal of picked stations exceed the specific length for saving
-            toPlot = {}
-            to_delete_key = []
-            for k, v in save_dict.items():
-                # if v[0] and v[1] > int(env_config['PICK_WAVESAVER_SAMPLE_TO_PLOT']):
-                timediff = (v-waveform_starttime)
-                # if int(env_config['STORE_LENGTH'])//100//2 - timediff.seconds >= int(env_config['PICK_WAVESAVER_SECOND_TO_PLOT']):
-                if 3000//100 - timediff.seconds >= int(env_config['PICK_WAVESAVER_SECOND_TO_PLOT']):
-                    toPlot[k] = timediff.seconds*100+timediff.microseconds//10000
-                    to_delete_key.append(k)
-                if timediff.days < 0:
-                    to_delete_key.append(k)
-                        
-            # plot the waveform 
-            if len(toPlot) > 0:
-                for plot_scnl, pick_sample in toPlot.items():
-                    try:
-                        # change the channel code to build the scnl, and accessing the waveform buffer by new scnl
-                        tmp = plot_scnl.split('_')
-                        if tmp[1][:2] == 'Ch':
-                            wave_index = [cur_key_index[f"{tmp[0]}_Ch{i}_{tmp[2]}_{tmp[-1]}"] for i in range(int(tmp[1][-1]), int(tmp[1][-1])+3)] 
-                        elif tmp[1][-1] == 'Z':
-                            wave_index = [cur_key_index[f"{tmp[0]}_{tmp[1][:2]}{i}_{tmp[2]}_{tmp[-1]}"] for i in ['Z', 'N', 'E']] 
-                        # print('wave_index: ', wave_index)
-                        # save the figure
-                        cur_date = datetime.fromtimestamp(time.time()).strftime('%Y_%m_%d_%H_%M_%S_%f')
-                        savename = f"{cur_date}_{plot_scnl}"
-                        png_filename = f"./plot/{dirname}/{savename}.png"
-
-                        # access the buffer and preprocess
-                        toPlot_waveform = cur_waveform_buffer[wave_index][:, :int(env_config['PREDICT_LENGTH'])].clone()
-                        # get the factor and coordinates of stations
-                        if env_config['SOURCE'] == 'Palert' or env_config['SOURCE'] == 'CWB' or env_config['SOURCE'] == 'TSMIP':
-                            station_factor_coords, station_list, flag = get_Palert_CWB_coord([plot_scnl], stationInfo)
-
-                            # count to gal
-                            factor = np.array([f[-1] for f in station_factor_coords]).astype(float)
-                            toPlot_waveform = toPlot_waveform/factor[:, None, None]
-                        else:
-                            station_factor_coords, station_list, flag = get_coord_factor([plot_scnl], stationInfo)
-
-                            # multiply with factor to convert count to 物理量
-                            factor = np.array([f[-1] for f in station_factor_coords])
-                            toPlot_waveform = toPlot_waveform*factor[:, :, None]
-
-                        # toPlot_waveform = toPlot_waveform - torch.mean(toPlot_waveform, dim=-1, keepdims=True)
-                        # toPlot_waveform = toPlot_waveform / torch.std(toPlot_waveform, dim=-1, keepdims=True)
-
-                        # toPad_mean = torch.mean(toPlot_waveform, dim=-1)
-                        # for jjj in range(3):
-                        #     tmp = toPlot_waveform[0, jjj]
-                        #     tmp[tmp==0] = toPad_mean[0, jjj]
-                        #     toPlot_waveform[0, jjj] = tmp
-
-                        # toPlot_waveform = scipy.signal.sosfilt(sos, toPlot_waveform, axis=-1)
-                        
-                        # plot the waveform without zero
-                        mask = (toPlot_waveform==0)
-                        tmp = []
-                        for j in range(3):
-                            tmp.append(toPlot_waveform[0, j][~mask[0, j]])
-
-                        # png title
-                        title = savename
-
-                        plt.figure(figsize=(12, 18))
-                        plt.rcParams.update({'font.size': 18})
-                    
-                        plt.subplot(311)
-                        plt.plot(tmp[0])
-                        plt.ylabel('gal (cm/s2)')
-                        plt.axvline(x=pick_sample, color='r')
-                        plt.title(title)
-                        
-                        plt.subplot(312)
-                        plt.plot(tmp[1])
-                        plt.ylabel('gal (cm/s2)')
-                        plt.axvline(x=pick_sample, color='r')
-
-                        plt.subplot(313)
-                        plt.plot(tmp[2])
-                        plt.ylabel('gal (cm/s2)')
-                        plt.axvline(x=pick_sample, color='r')
-
-                        plt.savefig(png_filename)
-                        plt.clf()
-                        plt.close('all')
-
-                    except Exception as e:
-                        # station is not in the chunk
-                        continue
-
-            # 把畫完的 scnl 刪掉
-            for k in to_delete_key:
-                del save_dict[k]
-
-            cwb_picked_waveform_save_TF.value *= 0
-        except Exception as e:
-            # log the pending 
-            # print(e)
-            cur = datetime.fromtimestamp(time.time())
-            picking_logfile = f"./log/exception/{CHECKPOINT_TYPE}_{cur.year}-{cur.month}-{cur.day}.log"
-            with open(picking_logfile,"a") as pif:
-                pif.write('='*25)
-                pif.write('\n')
-                pif.write(f"Time -> {cur.strftime('%Y-%m-%d %H:%M:%S.%f')}\n")
-                pif.write(f"Error message (CWBPickedWaveformSaver): {e}\n")
-                pif.write(f"Trace back (CWBPickedWaveformSaver): {traceback.format_exc()}\n")
-                pif.write('='*25)
-                pif.write('\n')
-                pif.close()
-
-            cwb_picked_waveform_save_TF.value *= 0
-            continue
-    
 # Calculating the Pa, Pv, and Pd per sample, only Z-component will be calculated
 def Pavd_calculator(pavd_calc, waveform_comein, waveform_scnl, waveform_comein_length, pavd_sta, stationInfo, env_config):
     print('Starting Pavd_calculator...')
@@ -1885,9 +1227,45 @@ def Pavd_calculator(pavd_calc, waveform_comein, waveform_scnl, waveform_comein_l
             waveform_comein_length.value *= 0
             continue
 
-if __name__ == '__main__':
-    torch.multiprocessing.set_start_method('spawn',force = True)
+def PavdModule_sender(CHECKPOINT_TYPE, pavd_calc, waveform_comein, waveform_comein_length, pavd_scnl, waveform_scnl):
     
+    # Send information into first Pavd module if idle
+    while True:
+        try:
+            w = pavd_scnl.get()
+
+            if w == {}:
+                continue
+
+            for k, v in w.items():
+                scnl = k
+                waveform = v
+                nsamp = 100
+
+            for i in range(7):
+                if pavd_calc[i].value == 0:
+                    waveform_scnl[i].value = scnl
+                    waveform_comein[i][0][:nsamp] = torch.from_numpy(waveform)
+                    waveform_comein_length[i].value += nsamp   
+                    pavd_calc[i].value += 1    
+
+                    break     
+        except Exception as e:
+            # log the pending 
+            cur = datetime.fromtimestamp(time.time())
+            picking_logfile = f"./log/exception/{CHECKPOINT_TYPE}_{cur.year}-{cur.month}-{cur.day}.log"
+            with open(picking_logfile,"a") as pif:
+                pif.write('='*25)
+                pif.write('\n')
+                pif.write(f"Time -> {cur.strftime('%Y-%m-%d %H:%M:%S.%f')}\n")
+                pif.write(f"Error message (PavdModule_sender): {e}\n")
+                pif.write(f"Trace back (PavdModule_sender): {traceback.format_exc()}\n")
+                pif.write('='*25)
+                pif.write('\n')
+                pif.close()
+            pass
+
+def create_dir():
     if not os.path.exists('./log/picking'):
         os.makedirs('./log/picking')
     if not os.path.exists('./log/notify'):
@@ -1907,264 +1285,14 @@ if __name__ == '__main__':
     if not os.path.exists('./trace'):
         os.makedirs('./trace')
 
-    try:
-        # create multiprocessing manager to maintain the shared variables
-        manager = Manager()
-
-        env_config = manager.dict()
-        for k, v in dotenv_values(".env").items():
-            env_config[k] = v
-
-        # get the station's info
-        # get the station list of palert
-        if env_config['SOURCE'] == 'Palert':
-            stationInfo = get_PalertStationInfo(env_config['PALERT_FILEPATH'])
-        elif env_config['SOURCE'] == 'CWB':
-            stationInfo = get_CWBStationInfo(env_config['STAEEW_FILEPATH'])
-            # stationInfo = get_StationInfo(env_config['NSTA_FILEPATH'], (datetime.utcfromtimestamp(time.time()) + timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S.%f'))
-        elif env_config['SOURCE'] == 'TSMIP':
-            stationInfo = get_TSMIPStationInfo(env_config['TSMIP_FILEPATH'])
-        else:
-            stationInfo = get_StationInfo(env_config['NSTA_FILEPATH'], (datetime.utcfromtimestamp(time.time()) + timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S.%f'))
-
-        # to save all raw wave form data, which is the numpy array, and the shape is (station numbur*channel, 3000)
-        if int(env_config['CHUNK']) == -1:
-            n_stations = len(stationInfo)
-        else:
-            n_stations = int(env_config["N_PREDICTION_STATION"])
-        
-        partial_station_list0, _ = station_selection(sel_chunk=2, station_list=stationInfo, opt=env_config['SOURCE'], build_table=False, n_stations=int(env_config["N_PREDICTION_STATION"]))
-        partial_station_list1, _ = station_selection(sel_chunk=1, station_list=stationInfo, opt=env_config['SOURCE'], build_table=False, n_stations=int(env_config["N_PREDICTION_STATION"]))
-        partial_station_list2, _ = station_selection(sel_chunk=3, station_list=stationInfo, opt=env_config['SOURCE'], build_table=False, n_stations=int(env_config["N_PREDICTION_STATION"]))
-        map_chunk_sta = {}
-        for s in partial_station_list0:
-            map_chunk_sta[s] = 0
-        for s in partial_station_list1:
-            map_chunk_sta[s] = 1
-        for s in partial_station_list2:
-            map_chunk_sta[s] = 1
-        print(len(map_chunk_sta))
-        # partial_station_list0, _ = station_selection(sel_chunk=0, station_list=stationInfo, opt=env_config['SOURCE'], build_table=False, n_stations=int(env_config["N_PREDICTION_STATION"]))
-        # map_chunk_sta = {}
-        # for s in partial_station_list0:
-        #     map_chunk_sta[s] = 0
-        # print(len(map_chunk_sta))
-
-
-        if True:
-            # a deque from time-3000 to time for time index
-            nowtime = Value('d', int(time.time()*100))
-            waveform_buffer_start_time = Value('d', nowtime.value-3000)
-
-            # a counter for accumulating key's count
-            key_cnt = Value('d', int(0))
-
-            # a dict for checking scnl's index of waveform
-            key_index = manager.dict()
-
-            # restart the system in process
-            restart_cond = Value('d', int(0))
-
-            waveform_buffer = torch.empty((n_stations*6, int(env_config["STORE_LENGTH"]))).share_memory_()
-
-            # parameters for WaveKeeper
-            waveform_save = torch.empty((n_stations, 3, int(env_config['PREDICT_LENGTH']))).share_memory_()
-            waveform_save_prediction = torch.empty((n_stations, int(env_config['PREDICT_LENGTH']))).share_memory_()
-            waveform_save_res = torch.empty((n_stations,)).share_memory_()
-            waveform_save_picktime = torch.empty((n_stations,)).share_memory_()
-            waveform_save_TF = Value('d', int(0))
-            waveform_plot_TF = Value('d', int(0))
-            keep_wave_cnt = Value('d', int(0))
-            waveform_save_waveform_starttime = manager.Value(c_char_p, 'Hello')
-            plot_time = manager.Value(c_char_p, 'Hello')
-            save_info = manager.dict()
-
-            # parameters for Shower
-            plot_info = manager.Value(c_char_p, 'hello')
-            waveform_plot_wf = torch.empty((1, 3, int(env_config['PREDICT_LENGTH']))).share_memory_()
-            waveform_plot_out = torch.empty((1, int(env_config['PREDICT_LENGTH']))).share_memory_()
-            waveform_plot_picktime = Value('d', int(0))
-
-            # parameters for uploader
-            logfilename_pick = manager.Value(c_char_p, 'hello')
-            logfilename_notify = manager.Value(c_char_p, 'hello')
-            logfilename_original_pick = manager.Value(c_char_p, 'hello')
-            logfilename_cwb_pick = manager.Value(c_char_p, 'hello')
-            logfilename_stat = manager.Value(c_char_p, 'hello')
-            upload_TF = Value('d', int(0))
-            avg_pickingtime = Value('d', int(0))
-            median_pickingtime = Value('d', int(0))
-            n_pick = Value('d', int(0))
-            pick_stat_notify = Value('d', int(0))
-            cwb_avg_pickingtime = Value('d', int(0))
-            cwb_median_pickingtime = Value('d', int(0))
-            cwb_n_pick = Value('d', int(0))
-            calc_cwbstat = Value('d', int(0))
-
-            # parameters for notifier
-            notify_TF = Value('d', int(0))
-            toNotify_pickedCoord = manager.dict()
-            n_notify = Value('d', int(0))
-
-            # parameters for remover
-            remove_daily = Value('d', int(0))
-
-            # parameters for pickwaveform_saver
-            picked_waveform_save_TF = Value('d', int(0))
-            scnl = manager.dict()
-
-            # parameters for CWB pickwaveform_saver
-            cwb_picked_waveform_save_TF = Value('d', int(0))
-            cwb_scnl = manager.dict()
-
-            # parameters for Pavd_calculator
-            pavd_sta = manager.dict()
-
-            pavd_calc = [Value('d', int(0)) for _ in range(7)]
-            waveform_comein = [torch.empty((1, 500)).share_memory_() for _ in range(7)]
-            waveform_comein_length = [Value('d', int(0)) for _ in range(7)]
-            waveform_scnl = [manager.Value(c_char_p, 'hello') for _ in range(7)]
-            pavd_scnl = manager.Queue()
-
-            # wave = manager.Queue()
-            wave = [manager.Queue() for _ in range(4)]
-
-        # device
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  
-
-        # get the candidate line notify tokens
-        notify_tokens, waveform_tokens = load_tokens(env_config['NOTIFY_TOKENS'], env_config['WAVEFORM_TOKENS'])
-        
-        client_id = str(uuid.uuid4())
-        mqtts = Process(target=Mqtt, args=(wave, client_id, map_chunk_sta))
-        mqtts.start()
-
-        wavesaver = []
-        for i in range(2):
-            if i == 1:
-                time.sleep(2)
-
-            buffer_no = i
-            wave_saver = Process(target=WaveSaver, args=(wave[buffer_no], env_config, waveform_buffer, key_index, nowtime, waveform_buffer_start_time, key_cnt, stationInfo, restart_cond,
-                                                            pavd_scnl, i))
-            wave_saver.start()
-            wavesaver.append(wave_saver)
-
-        time_mover = Process(target=TimeMover, args=(waveform_buffer, env_config, nowtime, waveform_buffer_start_time))
-        time_mover.start()
-
-        pavd_sender = Process(target=PavdModule_sender, args=(env_config['CHECKPOINT_TYPE'], pavd_calc, waveform_comein, waveform_comein_length, pavd_scnl, waveform_scnl))
-        pavd_sender.start()
-
-        picker = Process(target=Picker, args=(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_config, key_cnt, stationInfo, device,
-                                                waveform_save_picktime, (notify_tokens, waveform_tokens), waveform_save, waveform_save_res, waveform_save_prediction, 
-                                                waveform_save_TF, save_info, waveform_save_waveform_starttime, logfilename_pick, logfilename_original_pick, logfilename_notify, logfilename_cwb_pick, upload_TF, 
-                                                restart_cond, keep_wave_cnt, remove_daily, waveform_plot_TF, plot_info, waveform_plot_wf, waveform_plot_out, waveform_plot_picktime, plot_time,
-                                                notify_TF, toNotify_pickedCoord, n_notify, picked_waveform_save_TF, scnl, avg_pickingtime, median_pickingtime, n_pick, logfilename_stat, pick_stat_notify,
-                                                pavd_sta))
-        picker.start()
-
-        notifier = Process(target=Notifier, args=(notify_TF, toNotify_pickedCoord, notify_tokens, n_notify, int(env_config['CHUNK']), env_config['CHECKPOINT_TYPE']))
-        notifier.start()
-
-        wave_shower = Process(target=Shower, args=(waveform_plot_TF, plot_info, waveform_plot_wf, waveform_plot_out, waveform_plot_picktime, waveform_tokens, env_config['CHECKPOINT_TYPE']))
-        wave_shower.start()
-
-        if int(env_config['NOISE_KEEP']) != 0:
-            wave_keeper = Process(target=WaveKeeper, args=(waveform_save, waveform_save_res, waveform_save_prediction, waveform_save_TF, save_info, 
-                                                            waveform_save_waveform_starttime, waveform_save_picktime, keep_wave_cnt, plot_time, env_config['WAVE_KEEP_P_WEIGHT'], env_config['CHECKPOINT_TYPE']))
-            wave_keeper.start()
-
-        uploader = Process(target=Uploader, args=(logfilename_pick, logfilename_notify, logfilename_original_pick, logfilename_cwb_pick, logfilename_stat, env_config['TRC_PATH'], upload_TF, avg_pickingtime, median_pickingtime, n_pick, cwb_avg_pickingtime, cwb_median_pickingtime, cwb_n_pick, calc_cwbstat, env_config['CHECKPOINT_TYPE'], pick_stat_notify))
-        uploader.start()
-
-        remover = Process(target=Remover, args=(remove_daily, env_config['WAVE_EXPIRED'], env_config['CHECKPOINT_TYPE']))
-        remover.start()
-
-        # cwbpicker_logger = Process(target=CWBPicker, args=(env_config, cwb_avg_pickingtime, cwb_median_pickingtime, cwb_n_pick, upload_TF, calc_cwbstat, cwb_picked_waveform_save_TF, cwb_scnl, env_config['CHECKPOINT_TYPE']))
-        # cwbpicker_logger.start()
-
-        pickwaveform_saver = Process(target=PickedWaveformSaver, args=(env_config, scnl, picked_waveform_save_TF, waveform_buffer, key_index, waveform_buffer_start_time, stationInfo, env_config['CHECKPOINT_TYPE']))
-        pickwaveform_saver.start()
-
-        # cwb_pickwaveform_saver = Process(target=CWBPickedWaveformSaver, args=(env_config, cwb_picked_waveform_save_TF, cwb_scnl, waveform_buffer, key_index, waveform_buffer_start_time, stationInfo, env_config['CHECKPOINT_TYPE']))
-        # cwb_pickwaveform_saver.start()
-
-        pavd_processes = []
-        for i in range(7):
-            pavd_calculator = Process(target=Pavd_calculator, args=(pavd_calc[i], waveform_comein[i], waveform_scnl[i], waveform_comein_length[i], pavd_sta, stationInfo, env_config))
-            pavd_calculator.start()
-            pavd_processes.append(pavd_calculator)
-
-        for w in wavesaver:
-            w.join()
-
-        mqtts.join()
-
-        for w in pavd_processes:
-            w.join()
-                                                   
-        time_mover.join()
-        picker.join()
-        wave_shower.join()
-        pavd_sender.join()
-
-        if int(env_config['NOISE_KEEP']) != 0:
-            wave_keeper.join()
-
-        uploader.join()
-        remover.join()
-        cwbpicker_logger.join()
-        notifier.join()
-        pickwaveform_saver.join()
-        cwb_pickwaveform_saver.join()
-
-    except Exception as e:
-        print("-"*50)
-        print(e)
-        print("-"*50)
-    # except KeyboardInterrupt:
-    #     mqtt.terminate()
-    #     mqtt.join()
-
-    #     for w in wavesaver:
-    #         w.terminate()
-    #         w.join()
-
-    #     for w in pavd_processes:
-    #         w.terminate()
-    #         w.join()
-
-    #     time_mover.terminate()
-    #     time_mover.join()
-
-    #     pavd_sender.terminate()
-    #     pavd_sender.join()
-
-    #     picker.terminate()
-    #     picker.join()
-
-    #     # wave_shower.terminate()
-    #     # wave_shower.join()
-
-    #     # if int(env_config['NOISE_KEEP']) != 0:
-    #     #     wave_keeper.terminate()
-    #     #     wave_keeper.join()
-
-    #     # uploader.terminate()
-    #     # uploader.join()
-
-    #     # remover.terminate()
-    #     # remover.join()
-
-    #     # # cwbpicker_logger.terminate()
-    #     # # cwbpicker_logger.join()
-
-    #     # notifier.terminate()
-    #     # notifier.join()
-
-    #     # pickwaveform_saver.terminate()
-    #     # pickwaveform_saver.join()
-        
-    #     # cwb_pickwaveform_saver.terminate()
-    #     # cwb_pickwaveform_saver.join()
+if __name__ == '__main__':
+    torch.multiprocessing.set_start_method('spawn',force = True)
+    
+    # create the directories
+    create_dir()
+       
+    # start the system
+    # including mqtt, picker, ... modules
+    mqttserver = Mqtt()
+    mqttserver.start()
+      
