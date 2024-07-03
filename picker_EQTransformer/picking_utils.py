@@ -478,7 +478,7 @@ def gen_pickmsg(station_factor_coords, res, pred_trigger, toPredict_scnl, wavefo
     return pick_msg
 
 # plot the picking info on Taiwan map
-def plot_taiwan(name, coords1, token, token_number):
+def plot_taiwan(name, coords1, token, token_number, CHECKPOINT_TYPE):
     m = StaticMap(300, 400)
 
     for sta in coords1:
@@ -490,37 +490,13 @@ def plot_taiwan(name, coords1, token, token_number):
     image.save(f"./plot/trigger/{name}.png")
 
     token_number = random.sample(range(len(token)), k=1)[0]
-    token_number = notify(len(coords1), name, token, token_number)
-    
-    return token_number
-
-def plot_taiwan_pygmt(name, coords1, token, token_number):
-    lon = [c[0] for c in coords1]
-    lat = [c[1] for c in coords1]
-
-    df = {'longitude': lon, 'latitude': lat}
-    df = pd.DataFrame.from_dict(df)
-
-    region = [
-        118.5,
-        122.5,
-        21.7,
-        26.3,
-    ]
-    fig = pygmt.Figure()
-    fig.basemap(region=region, projection="M15c", frame=True)
-    fig.coast(land="black", water="skyblue")
-    fig.plot(x=df.longitude, y=df.latitude, style="c0.3c", fill="red", pen="black")
-    fig.savefig(f"./plot/trigger/{name}.png", transparent=True)
-
-    token_number = random.sample(range(len(token)), k=1)[0]
-    token_number = notify(len(coords1), name, token, token_number)
+    token_number = notify(len(coords1), name, token, token_number, CHECKPOINT_TYPE)
     
     return token_number
 
 # send the picking info to Line notify
-def notify(n_sta, name, token, token_number):
-    message = '\n(Palert)EQTransformer\n'+str(n_sta) + ' 個測站偵測到 P 波\n報告時間: '+str((datetime.utcfromtimestamp(time.time()) + timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S.%f'))
+def notify(n_sta, name, token, token_number, CHECKPOINT_TYPE):
+    message = '\n(Palert)' + str(CHECKPOINT_TYPE) + '\n'+str(n_sta) + ' 個測站偵測到 P 波\n報告時間: '+str((datetime.utcfromtimestamp(time.time()) + timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S.%f'))
     message += '\n'
 
     cnt = 0
@@ -562,9 +538,9 @@ def notify(n_sta, name, token, token_number):
     return token_number
 
 # send the picking info to Line notify
-def plot_notify(name, token, token_number):    
+def plot_notify(name, token, token_number, CHECKPOINT_TYPE, SOURCE):    
     msg = name.split('/')[-1].split('.')[0] 
-    message = f"(Palert) EQTransformer Prediction: {msg}\n"
+    message = f"({SOURCE}) {CHECKPOINT_TYPE} Prediction: {msg}\n"
 
     cnt = 0
     while True:
@@ -605,8 +581,8 @@ def plot_notify(name, token, token_number):
     return token_number
 
 # sent the notify proved the system is alive
-def alive_notify(token, token_number):
-    message = '(Palert)EQTransformer System is alive: \n'
+def alive_notify(token, token_number, CHECKPOINT_TYPE, SOURCE):
+    message = f"({SOURCE}) {CHECKPOINT_TYPE} sysgem is alive: \n"
     message += (datetime.utcfromtimestamp(time.time()) + timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S.%f')
 
     cnt = 0
@@ -637,45 +613,6 @@ def alive_notify(token, token_number):
                 break
             else:
                 print(f'(Alive) Error -> {response.status_code}, {response.text}')
-                token_number = random.sample(range(len(token)), k=1)[0]
-        except Exception as e:
-            print(e)
-            token_number = random.sample(range(len(token)), k=1)[0]
-    return token_number
-
-# sent the notify for 波型資料中斷
-def interrupt_notify(token, token_number):
-    message = '(Palert)Waveform data has been interrupted for more than 30 seconds\n'
-    message += (datetime.utcfromtimestamp(time.time()) + timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S.%f')
-
-    cnt = 0
-    while True:
-        if token_number >= len(token):
-            token_number = len(token) - 1
-            
-        cnt += 1
-        if cnt >= 3:
-            break
-
-        try:
-            url = "https://notify-api.line.me/api/notify"
-            headers = {
-                'Authorization': f'Bearer {token[token_number]}'
-            }
-            payload = {
-                'message': message,
-            }
-            response = requests.request(
-                "POST",
-                url,
-                headers=headers,
-                data=payload,
-            )
-            if response.status_code == 200:
-                print(f"Success, Interrupted... -> {response.text}")
-                break
-            else:
-                print(f'(Interrupted) Error -> {response.status_code}, {response.text}')
                 token_number = random.sample(range(len(token)), k=1)[0]
         except Exception as e:
             print(e)

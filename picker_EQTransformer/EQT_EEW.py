@@ -145,7 +145,7 @@ class Mqtt():
             notifier = Process(target=Notifier, args=(self.notify_TF, self.toNotify_pickedCoord, self.notify_tokens, self.n_notify, int(self.env_config['CHUNK']), self.env_config['CHECKPOINT_TYPE']))
             notifier.start()
 
-            wave_shower = Process(target=Shower, args=(self.waveform_plot_TF, self.plot_info, self.waveform_plot_wf, self.waveform_plot_out, self.waveform_plot_picktime, self.waveform_tokens, self.env_config['CHECKPOINT_TYPE']))
+            wave_shower = Process(target=Shower, args=(self.waveform_plot_TF, self.plot_info, self.waveform_plot_wf, self.waveform_plot_out, self.waveform_plot_picktime, self.waveform_tokens, self.env_config['CHECKPOINT_TYPE'], self.env_config['SOURCE']))
             wave_shower.start()
 
             uploader = Process(target=Uploader, args=(self.logfilename_pick, self.logfilename_notify, self.logfilename_original_pick, self.logfilename_stat, self.upload_TF, self.avg_pickingtime, self.median_pickingtime, self.n_pick, self.calc_cwbstat, self.env_config['CHECKPOINT_TYPE'], self.pick_stat_notify))
@@ -309,6 +309,9 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
     elif local_env["CHECKPOINT_TYPE"] == 'eqt':
         in_feat = 3
         model = sbm.EQTransformer(in_samples=int(local_env['PREDICT_LENGTH'])).to(device)
+    elif local_env['CHECKPOINT_TYPE'] == 'phaseNet':
+        model = sbm.PhaseNet(in_channels=3, classes=3, phases='NPS').to(device)
+
     checkpoint = torch.load(model_path, map_location=device)
     model.load_state_dict(checkpoint['model'])
     model.eval()
@@ -359,7 +362,7 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
             # 每小時發一個 notify，證明系統還活著
             if f"{system_year}-{system_month}-{system_day}-{system_hour}" != f"{cur.year}-{cur.month}-{cur.day}-{cur.hour}":
                 wave_token_number = random.sample(range(len(waveform_tokens)), k=1)[0]
-                wave_token_number = alive_notify(waveform_tokens, wave_token_number)
+                wave_token_number = alive_notify(waveform_tokens, wave_token_number, local_env['CHECKPOINT_TYPE'], local_env['SOURCE'])
                 system_hour = cur.hour
 
             # 已經是系統時間的隔天，檢查有沒有過舊的 log file，有的話將其刪除
@@ -370,7 +373,6 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
                 toDelete_picking_filename = f"./log/picking/{local_env['CHECKPOINT_TYPE']}_{toDelete_picking.year}-{toDelete_picking.month}-{toDelete_picking.day}_picking_chunk{local_env['CHUNK']}.log"
                 toDelete_original_picking_filename = f"./log/original_picking/{local_env['CHECKPOINT_TYPE']}_{toDelete_picking.year}-{toDelete_picking.month}-{toDelete_picking.day}_original_picking_chunk{local_env['CHUNK']}.log"
                 toDelete_notify_filename = f"./log/notify/{local_env['CHECKPOINT_TYPE']}_{toDelete_notify.year}-{toDelete_notify.month}-{toDelete_notify.day}_notify_chunk{local_env['CHUNK']}.log"
-                toDelete_cwbpicker_filename = f"./log/CWBPicker/{local_env['CHECKPOINT_TYPE']}_{toDelete_picking.year}-{toDelete_picking.month}-{toDelete_picking.day}_picking.log"
                 toDelete_exception_filename = f"./log/exception/{local_env['CHECKPOINT_TYPE']}_{toDelete_picking.year}-{toDelete_picking.month}-{toDelete_picking.day}.log"
 
                 if os.path.exists(toDelete_picking_filename):
@@ -379,8 +381,6 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
                     os.remove(toDelete_original_picking_filename)
                 if os.path.exists(toDelete_notify_filename):
                     os.remove(toDelete_notify_filename)
-                if os.path.exists(toDelete_cwbpicker_filename):
-                    os.remove(toDelete_cwbpicker_filename)
                 if os.path.exists(toDelete_exception_filename):
                     os.remove(toDelete_exception_filename)
 
@@ -457,7 +457,7 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
 
             toPredict_wave = cur_waveform_buffer[torch.tensor(toPredict_idx, dtype=torch.long)][:, :, start:end].to(device)
             toPredict_scnl = np.array(toPredict_scnl)
-            
+
             # get the factor and coordinates of stations
             if local_env['SOURCE'] == 'Palert' or local_env['SOURCE'] == 'CWASN' or local_env['SOURCE'] == 'TSMIP':
                 station_factor_coords, station_list, flag = get_Palert_CWB_coord(toPredict_scnl, stationInfo)
@@ -477,12 +477,7 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
             # 1) convert traces to acceleration
             # 2) 1-45Hz bandpass filter
             # 3) Z-score normalization
-            # 4) calculate features: Characteristic, STA, LTA
-           
-            # original wave: used for saving waveform
-            original_wave = toPredict_wave.clone()
-            unnormed_wave = original_wave.clone()
-            
+            # 4) calculate features: Characteristic, STA, LTA            
             if int(local_env['ZSCORE']) == 1:
                 toPredict_wave = z_score(toPredict_wave)
 
@@ -501,7 +496,10 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
                 # for eqt
                 elif local_env["CHECKPOINT_TYPE"] == 'eqt':
                     out = model(toPredict_wave)[1].detach().squeeze().cpu()
-
+                # for phaseNet
+                elif local_env['CHECKPOINT_TYPE'] == 'phaseNet':
+                    out = model(toPredict_wave)[:, 0].detach().squeeze().cpu()
+                
             # select the p-arrival time 
             original_res, pred_trigger = evaluation(out, float(local_env["THRESHOLD_PROB"]), int(local_env["THRESHOLD_TRIGGER"]), local_env["THRESHOLD_TYPE"])
             original_res = np.logical_and(original_res, flag).tolist()
@@ -711,10 +709,10 @@ def Notifier(notify_TF, toNotify_pickedCoord, line_tokens, n_notify, chunk, CHEC
                 picked_coord.append(toNotify_pickedCoord[i])
 
             cur_time = datetime.utcfromtimestamp(time.time())
-            trigger_plot_filename = f"{cur_time.year}-{cur_time.month}-{cur_time.day}_{cur_time.hour}:{cur_time.minute}:{cur_time.second}"
+            trigger_plot_filename = f"{CHECKPOINT_TYPE}_{cur_time.year}-{cur_time.month}-{cur_time.day}_{cur_time.hour}:{cur_time.minute}:{cur_time.second}"
             
             start = time.time()
-            line_token_number = plot_taiwan(trigger_plot_filename, picked_coord, line_tokens, line_token_number)
+            line_token_number = plot_taiwan(trigger_plot_filename, picked_coord, line_tokens, line_token_number, CHECKPOINT_TYPE)
 
             notify_TF.value *= 0
 
@@ -736,7 +734,7 @@ def Notifier(notify_TF, toNotify_pickedCoord, line_tokens, n_notify, chunk, CHEC
             continue
 
 # plotting
-def Shower(waveform_plot_TF, plot_info, waveform_plot_wf, waveform_plot_out, waveform_plot_picktime, waveform_tokens, CHECKPOINT_TYPE):
+def Shower(waveform_plot_TF, plot_info, waveform_plot_wf, waveform_plot_out, waveform_plot_picktime, waveform_tokens, CHECKPOINT_TYPE, SOURCE):
     print('Starting Shower...')
 
     token_number = 0
@@ -753,7 +751,7 @@ def Shower(waveform_plot_TF, plot_info, waveform_plot_wf, waveform_plot_out, wav
             # save waveform into png files
             scnl = "_".join(tmp[:4])
             savename = f"{cur}_{scnl}"
-            png_filename = f"./plot/{savename}.png"
+            png_filename = f"./plot/{CHECKPOINT_TYPE}_{savename}.png"
 
             # png title
             first_title = "_".join(tmp[:6])
@@ -788,7 +786,7 @@ def Shower(waveform_plot_TF, plot_info, waveform_plot_wf, waveform_plot_out, wav
             plt.close('all')
 
             token_number = random.sample(range(len(waveform_tokens)), k=1)[0]
-            token_number = plot_notify(png_filename, waveform_tokens, token_number)
+            token_number = plot_notify(png_filename, waveform_tokens, token_number, CHECKPOINT_TYPE, SOURCE)
                     
             os.remove(png_filename)
             waveform_plot_TF.value *= 0
