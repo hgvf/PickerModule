@@ -407,18 +407,14 @@ def check_duplicate_pick(res, toPredict_scnl, pick_record, pred_trigger, wavefor
             
     return res, pick_record
 
-# 替 PickedWaveformSaver 產生需要的資訊
-def gen_toPending_waveform_trigger(res, pred_trigger, toPredict_scnl, p_weight, p_weight_threshold):
+def gen_new_pred_trigger(res, pred_trigger, p_weight, p_weight_threshold):
     new_pred_trigger = []
-    new_toPredict_scnl = []
-
     pick_idx = np.arange(len(res))[res]
     for idx, pp in enumerate(pick_idx):
         if p_weight[idx] <= p_weight_threshold:
             new_pred_trigger.append(pred_trigger[pp])
-            new_toPredict_scnl.append(toPredict_scnl[pp])
     
-    return new_pred_trigger, new_toPredict_scnl
+    return new_pred_trigger
 
 # generate the picking message 
 # Format: S C N L Longitude Latitude Pa Pv Pd Tc/PGA P-arrival P-weight Instrument/Src Duration
