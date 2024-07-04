@@ -48,7 +48,7 @@ def calc_feats(waveforms):
 
     # Calculate data using vectorized operations
     data = torch.cumsum(waveforms + small_float, dim=2) * rawDataFilt
-    data -= torch.cat((torch.zeros((waveforms.shape[0], waveforms.shape[1], 1)), data[:, :, :-1]), dim=2)
+    data -= torch.cat((torch.zeros((waveforms.shape[0], waveforms.shape[1], 1)).to(waveforms.device), data[:, :, :-1]), dim=2)
 
     # Calculate wave_square and diff_square using vectorized operations
     wave_square = torch.square(data)
@@ -59,8 +59,8 @@ def calc_feats(waveforms):
     wave_characteristic = wave_square + diff_square * CharFuncFilt
 
     # Calculate wave_sta and wave_lta using vectorized operations
-    sta = torch.zeros((waveforms.shape[0], waveforms.shape[1], 1))
-    lta = torch.zeros((waveforms.shape[0], waveforms.shape[1], 1))
+    sta = torch.zeros((waveforms.shape[0], waveforms.shape[1], 1)).to(waveforms.device)
+    lta = torch.zeros((waveforms.shape[0], waveforms.shape[1], 1)).to(waveforms.device)
 
     wave_sta = torch.cumsum((waveforms - sta) * STA_W, dim=2)
     wave_lta = torch.cumsum((waveforms - lta) * LTA_W, dim=2)
