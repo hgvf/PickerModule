@@ -32,6 +32,7 @@ from datetime import datetime, timedelta, timezone
 from collections import deque
 from picking_preprocess import *
 from picking_utils import *
+from picking_model import *
 from Pavd_module import *
 
 import seisbench.models as sbm
@@ -167,9 +168,19 @@ class Mqtt():
                 w.join()
             
         except KeyboardInterrupt:
-            for w in wavesaver:
-                w.terminate()
-                w.join()
+            time_mover.terminate()
+            pavd_sender.terminate()
+            picker.terminate()
+            notifier.terminate()
+            wave_shower.terminate()
+            uploader.terminate()
+
+            time_mover.join()
+            pavd_sender.join()
+            picker.join()
+            notifier.join()
+            wave_shower.join()
+            uploader.join()
 
     def init_shared_params(self):
         self.n_buffer = 1
@@ -541,7 +552,7 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
                 toPredict_wave = filter(toPredict_wave, sos)
 
             if local_env["CHECKPOINT_TYPE"] == 'GRADUATE':
-                stft = STFT(toPredict_wave).to(device)
+                stft = STFT(toPredict_wave.cpu().numpy()).to(device)
                 toPredict_wave = calc_feats(toPredict_wave)
 
             # predict
