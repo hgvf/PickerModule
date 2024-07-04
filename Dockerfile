@@ -10,5 +10,8 @@ pip3 install torch && \
 cd seisbench  && \
 pip install . 
 
-RUN ["CUDA_VISIBLE_DEVICES=0", "python", "picker.py"]
+# Set the CUDA_VISIBLE_DEVICES environment variable
+ENV CUDA_VISIBLE_DEVICES=0
+
+RUN ["python", "picker.py"]
 
