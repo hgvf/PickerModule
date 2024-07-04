@@ -56,6 +56,8 @@ class Mqtt():
         
         self.cnt = 0
         self.init_shared_params()
+
+        self.store_length = int(self.env_config['STORE_LENGTH'])
         self.station_chunk()
         self.activate_mqtt()
 
@@ -93,6 +95,8 @@ class Mqtt():
 
         # append the data in package into shared waveform buffer
         startIndex = int(starttime*self.samp_rate) - int(self.waveform_buffer_start_time.value)
+        
+        # if startIndex >= 0 and startIndex < self.store_length:
         data = data.copy()
         self.waveform_buffer[self.key_index[scnl]][startIndex:startIndex+nsamp] = torch.from_numpy(data)
     
@@ -101,7 +105,7 @@ class Mqtt():
             msg_to_pavd = {scnl: data}
             self.pavd_scnl.put(msg_to_pavd)
 
-        # print('package/current time: ', starttime, time.time())
+            # print('package/current time: ', starttime, time.time())
     
     def on_disconnect(self, client, userdata, rc):
         if rc != 0:
@@ -136,8 +140,8 @@ class Mqtt():
             pavd_sender.start()
 
             picker = Process(target=Picker, args=(self.waveform_buffer, self.key_index, self.nowtime, self.waveform_buffer_start_time, self.env_config, self.key_cnt, self.stationInfo, self.device,
-                                                    (self.notify_tokens, self.waveform_tokens), self.logfilename_pick, self.logfilename_original_pick, self.logfilename_notify, self.upload_TF, 
-                                                    self.remove_daily, self.waveform_plot_TF, self.plot_info, self.waveform_plot_wf, self.waveform_plot_out, self.waveform_plot_picktime,
+                                                    (self.notify_tokens, self.waveform_tokens), self.upload_TF, 
+                                                    self.waveform_plot_TF, self.plot_info, self.waveform_plot_wf, self.waveform_plot_out, self.waveform_plot_picktime,
                                                     self.notify_TF, self.toNotify_pickedCoord, self.n_notify, self.avg_pickingtime, self.median_pickingtime, self.n_pick, self.logfilename_stat, self.pick_stat_notify,
                                                     self.pavd_sta))
             picker.start()
@@ -154,15 +158,15 @@ class Mqtt():
             wave_shower = Process(target=Shower, args=(self.waveform_plot_TF, self.plot_info, self.waveform_plot_wf, self.waveform_plot_out, self.waveform_plot_picktime, self.waveform_tokens, self.env_config['CHECKPOINT_TYPE'], self.env_config['SOURCE']))
             wave_shower.start()
 
-            uploader = Process(target=Uploader, args=(self.logfilename_pick, self.logfilename_notify, self.logfilename_original_pick, self.logfilename_stat, self.upload_TF, self.avg_pickingtime, self.median_pickingtime, self.n_pick, self.calc_cwbstat, self.env_config['CHECKPOINT_TYPE'], self.pick_stat_notify))
-            uploader.start()            
+            stat = Process(target=Stat, args=(self.upload_TF, self.logfilename_stat, self.avg_pickingtime, self.median_pickingtime, self.n_pick, self.env_config['CHECKPOINT_TYPE'], self.pick_stat_notify))
+            stat.start()            
 
             time_mover.join()
             pavd_sender.join()
             picker.join()
             notifier.join()
             wave_shower.join()
-            uploader.join()
+            stat.join()
 
             for w in pavd_processes:
                 w.join()
@@ -173,14 +177,14 @@ class Mqtt():
             picker.terminate()
             notifier.terminate()
             wave_shower.terminate()
-            uploader.terminate()
+            stat.terminate()
 
             time_mover.join()
             pavd_sender.join()
             picker.join()
             notifier.join()
             wave_shower.join()
-            uploader.join()
+            stat.join()
 
     def init_shared_params(self):
         self.n_buffer = 1
@@ -229,28 +233,18 @@ class Mqtt():
         self.waveform_plot_picktime = Value('d', int(0))
         self.waveform_plot_TF = Value('d', int(0))
 
-        # parameters for uploader
-        self.logfilename_pick = manager.Value(c_char_p, 'hello')
-        self.logfilename_notify = manager.Value(c_char_p, 'hello')
-        self.logfilename_original_pick = manager.Value(c_char_p, 'hello')
-        self.logfilename_stat = manager.Value(c_char_p, 'hello')
-        self.upload_TF = Value('d', int(0))
+        # parameters for Stat
         self.avg_pickingtime = Value('d', int(0))
         self.median_pickingtime = Value('d', int(0))
         self.n_pick = Value('d', int(0))
         self.pick_stat_notify = Value('d', int(0))
-        self.cwb_avg_pickingtime = Value('d', int(0))
-        self.cwb_median_pickingtime = Value('d', int(0))
-        self.cwb_n_pick = Value('d', int(0))
-        self.calc_cwbstat = Value('d', int(0))
+        self.logfilename_stat = manager.Value(c_char_p, 'hello')
+        self.upload_TF = Value('d', int(0))
 
         # parameters for notifier
         self.notify_TF = Value('d', int(0))
         self.toNotify_pickedCoord = manager.dict()
         self.n_notify = Value('d', int(0))
-
-        # parameters for remover
-        self.remove_daily = Value('d', int(0))
 
         # parameters for Pavd_calculator
         self.pavd_sta = manager.dict()
@@ -356,8 +350,8 @@ def TimeMover(waveform_buffer, env_config, nowtime, waveform_buffer_start_time):
 
 # picking: pick and send pick_msg to PICK_RING
 def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_config, key_cnt, stationInfo, device,
-            tokens, logfilename_pick, logfilename_original_pick, logfilename_notify, upload_TF, 
-            remove_daily, waveform_plot_TF, plot_info, waveform_plot_wf, waveform_plot_out, waveform_plot_picktime,
+            tokens, upload_TF, 
+            waveform_plot_TF, plot_info, waveform_plot_wf, waveform_plot_out, waveform_plot_picktime,
             notify_TF, toNotify_pickedCoord, n_notify, avg_pickingtime, median_pickingtime, n_pick, logfilename_stat, pick_stat_notify,
             pavd_sta):
     
@@ -456,9 +450,6 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
                     os.remove(toDelete_exception_filename)
 
                 # upload files
-                logfilename_pick.value = f"./log/picking/{local_env['CHECKPOINT_TYPE']}_{system_year}-{system_month}-{system_day}_picking_chunk{local_env['CHUNK']}.log"
-                logfilename_original_pick.value = f"./log/original_picking/{local_env['CHECKPOINT_TYPE']}_{system_year}-{system_month}-{system_day}_original_picking_chunk{local_env['CHUNK']}.log"
-                logfilename_notify.value = f"./log/notify/{local_env['CHECKPOINT_TYPE']}_{system_year}-{system_month}-{system_day}_notify_chunk{local_env['CHUNK']}.log"
                 logfilename_stat.value = f"./log/statistical/{local_env['CHECKPOINT_TYPE']}_{system_year}-{system_month}-{system_day}_picker_stat.log"
 
                 # 將每日統計結果傳給 Uploader
@@ -472,10 +463,7 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
                     n_pick.value = 0
 
                 pick_stat = []
-
                 upload_TF.value += 1
-                remove_daily.value += 1
-
                 system_year, system_month, system_day = cur.year, cur.month, cur.day
 
             cur_waveform_starttime = datetime.utcfromtimestamp(waveform_buffer_start_time.value/100)
@@ -894,70 +882,14 @@ def Shower(waveform_plot_TF, plot_info, waveform_plot_wf, waveform_plot_out, wav
             continue
 
 # Upload to google drive
-def Uploader(logfilename_pick, logfilename_notify, logfilename_original_pick, logfilename_stat, upload_TF, 
-            avg_pickingtime, median_pickingtime, n_pick, calc_cwbstat, CHECKPOINT_TYPE, pick_stat_notify):
+def Stat(upload_TF, logfilename_stat, avg_pickingtime, median_pickingtime, n_pick, CHECKPOINT_TYPE, pick_stat_notify):
     print('Starting Uploader...')
-
-    from pydrive.auth import GoogleAuth
-    from pydrive.drive import GoogleDrive
-
-    gauth = GoogleAuth()
-    gauth.LoadCredentialsFile("credentials.json")
-    drive = GoogleDrive(gauth)
 
     while True:
         if upload_TF.value == 0.0:
             continue
 
         try:
-            # 通知 CWBPicker 要開始統計數據
-            calc_cwbstat.value += 1.0
-
-            # =========================== picking log ============================= #
-            # upload picking log file
-            if not os.path.exists(logfilename_pick.value):
-                Path(logfilename_pick.value).touch()
-            
-            file1 = drive.CreateFile({"title":logfilename_pick.value,"parents": [{"kind": "drive#fileLink", "id": "1Y2o_Pp6np8xnxl0QysU4-zVEm4mWOI6_"}]})
-            file1.SetContentFile(logfilename_pick.value)
-            file1.Upload() #檔案上傳
-            print("picking log file -> uploading succeeded!")
-            # =========================== picking log ============================= #
-
-            # =========================== original picking ============================ #
-            # upload original picking log file
-            if not os.path.exists(logfilename_original_pick.value):
-                Path(logfilename_original_pick.value).touch()
-
-            file1 = drive.CreateFile({"title":logfilename_original_pick.value,"parents": [{"kind": "drive#fileLink", "id": "1QmeQbsyjajpKHQXcuNxjNm426J--GZ15"}]})
-            file1.SetContentFile(logfilename_original_pick.value)
-            file1.Upload() #檔案上傳
-            print("original picking log file -> uploading succeeded!")
-            # =========================== original picking ============================ #
-
-            # ============================== notify log ================================ #
-            # upload notify log file
-            if not os.path.exists(logfilename_notify.value):
-                Path(logfilename_notify.value).touch()
-
-            file1 = drive.CreateFile({"title":logfilename_notify.value,"parents": [{"kind": "drive#fileLink", "id": "1aqLRskDjn7Vi7WB-uzakLiBooKSe67BD"}]})
-            file1.SetContentFile(logfilename_notify.value)
-            file1.Upload() #檔案上傳
-            print("notify log file -> uploading succeeded!")
-            # ============================== notify log ================================ #
-
-            # =========================== exception log ============================ #
-            # 上傳 exception log
-            exception_log = f"./log/exception/{CHECKPOINT_TYPE}_{year}-{month}-{day}.log"
-            if not os.path.exists(exception_log):
-                Path(exception_log).touch()
-
-            file1 = drive.CreateFile({"title":exception_log,"parents": [{"kind": "drive#fileLink", "id": "1WwvVw3FGZtnk1hNfK1Mss8iOwuWsUJ2w"}]})
-            file1.SetContentFile(exception_log)
-            file1.Upload() #檔案上傳
-            print("Exception log file -> uploading succeeded!")
-            # =========================== exception picking ============================ #
-
             # =========================== statistical ============================ #
             try:
                 # 將 AI picker 昨日的 picking 統計數據寫成 log 檔
@@ -971,31 +903,12 @@ def Uploader(logfilename_pick, logfilename_notify, logfilename_original_pick, lo
                     f.write(f"Median picking time that model need (delay): {median_pickingtime.value} s\n")
                     f.write('='*50)
                     f.write('\n')
-                
-                # 將 CWB picker 昨日的 picking 統計數據寫成 log 檔
-                while True:
-                    if calc_cwbstat.value == 0.0:
-                        break
-
-                with open(logfilename_stat.value, 'a') as f:
-                    f.write('='*50)
-                    f.write('\n')
-                    f.write(f"{cur.year}-{cur.month}-{cur.day} CWB picker statistical\n")
-                    f.write(f"Number of picked stations: {cwb_n_pick.value}\n")
-                    f.write(f"Average picking time that model need (delay): {cwb_avg_pickingtime.value} s\n")
-                    f.write(f"Median picking time that model need (delay): {cwb_median_pickingtime.value} s\n")
-                    f.write('='*50)
-                    f.write('\n')
-
+            
                 if not os.path.exists(logfilename_stat.value):
                     Path(logfilename_stat.value).touch()
 
                 pick_stat_notify.value *= 0
 
-                file1 = drive.CreateFile({"title":logfilename_stat.value,"parents": [{"kind": "drive#fileLink", "id": "1SO8DUFMshG2E2P33KCx7146cBR0V0jXG"}]})
-                file1.SetContentFile(logfilename_stat.value)
-                file1.Upload() #檔案上傳
-                print("statistical file -> uploading succeeded!")
             except:
                 pass
             # =========================== statistical ============================ #
