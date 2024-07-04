@@ -583,7 +583,7 @@ def plot_notify(name, token, token_number, CHECKPOINT_TYPE, SOURCE):
 
 # sent the notify proved the system is alive
 def alive_notify(token, token_number, CHECKPOINT_TYPE, SOURCE):
-    message = f"({SOURCE}) {CHECKPOINT_TYPE} sysgem is alive: \n"
+    message = f"({SOURCE}) {CHECKPOINT_TYPE} system is alive: \n"
     message += (datetime.utcfromtimestamp(time.time()) + timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S.%f')
 
     cnt = 0
@@ -623,6 +623,14 @@ def alive_notify(token, token_number, CHECKPOINT_TYPE, SOURCE):
 # select the stations to collect the waveform
 def station_selection(sel_chunk, station_list, opt, build_table=False, n_stations=None, threshold_km=None,
                     nearest_station=3, option='nearest'):
+    end_chunk = None
+    if len(sel_chunk) > 2:
+        start_chunk = int(sel_chunk[0])
+        end_chunk = int(sel_chunk[-1])
+    else:
+        start_chunk = int(sel_chunk)
+        end_chunk = start_chunk+1
+
     if opt == 'CWB':
         lon_split = np.array([120.91])
         lat_split = np.array([21.913 , 22.2508961, 22.5887922, 22.9266883, 23.2645844,
@@ -731,20 +739,26 @@ def station_selection(sel_chunk, station_list, opt, build_table=False, n_station
         output_chunks[1] = new_output_chunks1
 
         # if sel_chunk == -1, then collect all station in TSMIP
-        if sel_chunk == -1:
+        if start_chunk == -1:
             output_chunks = []
             for k, v in station_list.items():
                 output_chunks.append((k, [float(v[0]), float(v[1]), float(v[2])]))
             output_chunks = [output_chunks]
-       
+
         table = 0
         if build_table:
             # build the table that contains every station in "threshold_km" km for each station
-            table = build_neighborStation_table(output_chunks[sel_chunk], threshold_km, nearest_station, option)
-                
+            for ch in range(start_chunk, end_chunk):
+                if table == 0:
+                    table = build_neighborStation_table(output_chunks[ch], threshold_km, nearest_station, option)
+                else:
+                    cur = build_neighborStation_table(output_chunks[ch], threshold_km, nearest_station, option)
+                    table.update(cur)
+
         output = []
-        for o in output_chunks[sel_chunk]:
-            output.append(o[0])
+        for ch in range(start_chunk, end_chunk):
+            for o in output_chunks[ch]:
+                output.append(o[0])
 
         return output, table
 
@@ -762,9 +776,14 @@ def station_selection(sel_chunk, station_list, opt, build_table=False, n_station
         table = 0
         if build_table:
             # build the table that contains every station in "threshold_km" km for each station
-            table = build_neighborStation_table(station_chunks[sel_chunk], threshold_km, nearest_station, option)
+            for ch in range(start_chunk, end_chunk):
+                if table == 0:
+                    table = build_neighborStation_table(station_chunks[ch], threshold_km, nearest_station, option)
+                else:
+                    cur = build_neighborStation_table(station_chunks[ch], threshold_km, nearest_station, option)
+                    table.update(cur)
 
-        return [i[0] for i in station_chunks[sel_chunk]], table
+        return [i[0] for i in station_chunks[start_chunk]], table
 
 # For TSMIP, 用 station_code 代碼再分區
 def ForTSMIP_station_selection(stationInfo, target_length):

@@ -61,10 +61,11 @@ class Mqtt():
     def on_connect(self, client, userdata, flags, rc):
         if rc == 0:
             print("Connected with result code " + str(rc))
-
+    
             for t in self.topic:
-                print(t)
+                # print(t)
                 client.subscribe(t)
+
             # client.subscribe("RSD24bits/#")
         else:
             print("Failed to connect, ", rc)
@@ -146,7 +147,7 @@ class Mqtt():
                 pavd_calculator.start()
                 pavd_processes.append(pavd_calculator)
 
-            notifier = Process(target=Notifier, args=(self.notify_TF, self.toNotify_pickedCoord, self.notify_tokens, self.n_notify, int(self.env_config['CHUNK']), self.env_config['CHECKPOINT_TYPE']))
+            notifier = Process(target=Notifier, args=(self.notify_TF, self.toNotify_pickedCoord, self.notify_tokens, self.n_notify, self.env_config['CHECKPOINT_TYPE']))
             notifier.start()
 
             wave_shower = Process(target=Shower, args=(self.waveform_plot_TF, self.plot_info, self.waveform_plot_wf, self.waveform_plot_out, self.waveform_plot_picktime, self.waveform_tokens, self.env_config['CHECKPOINT_TYPE'], self.env_config['SOURCE']))
@@ -299,9 +300,9 @@ class Mqtt():
             topic.append(f"{topic_prefix}/TW/#")
         else:
             channel_tail = ['Z', 'N', 'E']
-            for ch in range(start_chunk, end_chunk+1):
+            for ch in range(start_chunk, end_chunk):
                 # station_chunks => station_code: [lontitude, latitude, factor, channel, location]
-                for sta in station_chunks[i]:
+                for sta in station_chunks[ch]:
                     for chn in channel_tail:
                         topic.append(f"{topic_prefix}/TW/{sta[0]}/{sta[1][4]}/{sta[1][3]}{chn}")
 
@@ -392,7 +393,7 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
     system_hour = cur.hour
     
     # Neighbor_table: 蒐集每個測站方圓 X km 內所有測站的代碼
-    _, neighbor_table = station_selection(sel_chunk=int(local_env["CHUNK"]), station_list=stationInfo, opt=local_env['SOURCE'], build_table=True, n_stations=int(local_env["N_PREDICTION_STATION"]), threshold_km=float(local_env['THRESHOLD_KM']),
+    _, neighbor_table = station_selection(sel_chunk=local_env["CHUNK"], station_list=stationInfo, opt=local_env['SOURCE'], build_table=True, n_stations=int(local_env["N_PREDICTION_STATION"]), threshold_km=float(local_env['THRESHOLD_KM']),
                                             nearest_station=int(local_env['NEAREST_STATION']), option=local_env['TABLE_OPTION'])
 
     # sleeping, 讓波型先充滿 noise，而不是 0
@@ -768,7 +769,7 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
             continue
 
 # notifing 
-def Notifier(notify_TF, toNotify_pickedCoord, line_tokens, n_notify, chunk, CHECKPOINT_TYPE):
+def Notifier(notify_TF, toNotify_pickedCoord, line_tokens, n_notify, CHECKPOINT_TYPE):
     print('Starting Notifier...')
 
     token_number, line_token_number = 0, 0
