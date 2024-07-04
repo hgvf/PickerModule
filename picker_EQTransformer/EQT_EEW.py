@@ -61,7 +61,11 @@ class Mqtt():
     def on_connect(self, client, userdata, flags, rc):
         if rc == 0:
             print("Connected with result code " + str(rc))
-            client.subscribe("RSD24bits/#")
+
+            for t in self.topic:
+                print(t)
+                client.subscribe(t)
+            # client.subscribe("RSD24bits/#")
         else:
             print("Failed to connect, ", rc)
             client.disconnect()
@@ -245,13 +249,64 @@ class Mqtt():
         self.pavd_scnl = manager.Queue()
 
     def station_chunk(self):
-        self.partial_station_list = None
-        if int(self.env_config["CHUNK"]) != -1:
-            # 如果是 TSMIP，額外再做分區，並把分區結果存下來
-            if self.env_config['SOURCE'] == 'TSMIP' and int(self.env_config['CHUNK']) != -1:
-                self.partial_station_list = ForTSMIP_station_selection(self.stationInfo, int(self.env_config["N_PREDICTION_STATION"]))
+        '''
+        Three patterns:
+        
+        1. CHUNK=-1, taking all of the station to predict
+        2. CHUNK=0, select the specific chunk of the stations to predict
+        3. CHUNK=0-2, select multiple chunks of the stations to predict
+        '''
+        # Slice the chunk depends on the stationInfo
+        source = self.env_config['SOURCE']
+        n_stations = int(self.env_config['N_PREDICTION_STATION'])
+        if source == 'Palert':
+            station_chunks = ForPalert_station_selection(self.stationInfo, n_stations)
+        elif source == 'TSMIP':
+            station_chunks = ForTSMIP_station_selection(self.stationInfo, n_stations)
+        # TODO: CWASN
 
-            self.partial_station_list, _ = station_selection(sel_chunk=int(self.env_config["CHUNK"]), station_list=self.stationInfo, opt=self.env_config['SOURCE'], build_table=False, n_stations=int(self.env_config["N_PREDICTION_STATION"]))
+        # Check the chunk number
+        chunk = self.env_config['CHUNK']
+        end_chunk = None
+        if len(chunk) > 2:
+            start_chunk = int(chunk[0])
+            end_chunk = int(chunk[-1])
+        else:
+            start_chunk = int(chunk)
+
+            if start_chunk == -1:
+                end_chunk = len(station_chunks)-1
+            else:
+                end_chunk = start_chunk+1
+       
+        # === to delete === #
+        # self.partial_station_list = None
+        # if int(self.env_config["CHUNK"]) != -1:
+        #     # 如果是 TSMIP，額外再做分區，並把分區結果存下來
+        #     if self.env_config['SOURCE'] == 'TSMIP' and int(self.env_config['CHUNK']) != -1:
+        #         self.partial_station_list = ForTSMIP_station_selection(self.stationInfo, int(self.env_config["N_PREDICTION_STATION"]))
+
+        #     self.partial_station_list, _ = station_selection(sel_chunk=int(self.env_config["CHUNK"]), station_list=self.stationInfo, opt=self.env_config['SOURCE'], build_table=False, n_stations=int(self.env_config["N_PREDICTION_STATION"]))
+        # === to delete === #
+
+        # Merge the chunk, generating the topic name
+        topic = []
+
+        # topic template: source/network/station/location/channel
+        # ex. CWASN24Bit/TW/ALS/10/HLZ
+        topic_prefix = self.env_config['WAVE_TOPIC']
+        if start_chunk == -1:
+            topic.append(f"{topic_prefix}/TW/#")
+        else:
+            channel_tail = ['Z', 'N', 'E']
+            for ch in range(start_chunk, end_chunk+1):
+                # station_chunks => station_code: [lontitude, latitude, factor, channel, location]
+                for sta in station_chunks[i]:
+                    for chn in channel_tail:
+                        topic.append(f"{topic_prefix}/TW/{sta[0]}/{sta[1][4]}/{sta[1][3]}{chn}")
+
+        self.topic = topic
+
 
 def TimeMover(waveform_buffer, env_config, nowtime, waveform_buffer_start_time):
     print('Starting TimeMover...')
@@ -299,6 +354,10 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
     local_env = {}
     for k, v in env_config.items():
         local_env[k] = v
+
+    # mqtt server for publishing pick_msg
+    client = mqtt.Client()
+    client.connect(env_config['MQTT_SERVER'], int(env_config['PORT']), int(env_config['TIMEOUT']))
 
     # loading pretrained picker
     model_path = local_env["PICKER_CHECKPOINT_PATH"]
@@ -467,12 +526,8 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
                 
                 toPredict_wave = toPredict_wave/factor[:, None, None].to(device)
             else:
-                station_factor_coords, station_list, flag = get_coord_factor(toPredict_scnl, stationInfo)
-
-                # multiply with factor to convert count to 物理量
-                factor = np.array([f[-1] for f in station_factor_coords])
-                toPredict_wave = toPredict_wave*factor[:, :, None].to(device)
-
+                continue
+    
             # preprocess
             # 1) convert traces to acceleration
             # 2) 1-45Hz bandpass filter
@@ -503,7 +558,7 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
             # select the p-arrival time 
             original_res, pred_trigger = evaluation(out, float(local_env["THRESHOLD_PROB"]), int(local_env["THRESHOLD_TRIGGER"]), local_env["THRESHOLD_TYPE"])
             original_res = np.logical_and(original_res, flag).tolist()
-
+            
             # 寫 original res 的 log 檔
             if np.any(original_res):   
                 # calculate Pa, Pv, Pd
@@ -537,7 +592,7 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
                         # print('pick_time: ', pick_time)
                         pif.write(f",\tp arrival time-> {pick_time.strftime('%Y-%m-%d %H:%M:%S.%f')}\n")
                         pif.write(f"{msg}\n")
-
+                        
                     pif.close()
                 
                 # filter the picked station that picked within picktime_gap seconds before
@@ -591,10 +646,29 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
                             # print('pick_time: ', pick_time)
                             pif.write(f",\tp arrival time-> {pick_time.strftime('%Y-%m-%d %H:%M:%S.%f')}\n")
                             pif.write(f"{msg}\n")
-                            # report(msg , 'EQTransformer')
+
+                            # publish to mqtt (pick_msg)
+                            message = {
+                                "station" : tmp[0],
+                                "channel" : tmp[1],
+                                "network" : tmp[2],
+                                "location" : tmp[3],
+                                "longitude" : tmp[4],
+                                "latitude" : tmp[5],
+                                "pa" : tmp[6],
+                                "pv" : tmp[7],
+                                "pd" : tmp[8],
+                                "tc" : tmp[9],
+                                "ptime" : tmp[10],
+                                "weight" : tmp[11],
+                                "instrument" : tmp[12],
+                                "upd_sec" : tmp[13],
+                            }
+                            client.publish(f"{local_env['PICK_MSG_TOPIC']}/{local_env['CHECKPOINT_TYPE']}", json.dumps(message))
 
                             picked_coord.append((float(tmp[4]), float(tmp[5])))
                             notify_msg.append(msg)
+                            
                     pif.close() 
 
                 # plotting the station on the map and send info to Line notify
