@@ -104,8 +104,6 @@ class Mqtt():
         if channel[-1] == 'Z':
             msg_to_pavd = {scnl: data}
             self.pavd_scnl.put(msg_to_pavd)
-
-            # print('package/current time: ', starttime, time.time())
     
     def on_disconnect(self, client, userdata, rc):
         if rc != 0:
