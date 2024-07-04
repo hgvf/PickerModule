@@ -10,7 +10,6 @@ from scipy import integrate
 from math import sin, cos, sqrt, atan2, radians
 import bisect
 
-
 # get the station's factor, latitude, lontitude, starttime, and endtime
 def get_StationInfo(nsta_path, starttime):
     a_time = starttime[:4] + starttime[5:7] + starttime[8:10]
@@ -66,7 +65,7 @@ def get_PalertStationInfo(palert_path):
     
     stationInfo = {}
     for i in df.iterrows():
-        stationInfo[i[1]['station']] = [i[1]['lontitude'], i[1]['latitude'], 16.718]
+        stationInfo[i[1]['station']] = [i[1]['lontitude'], i[1]['latitude'], 16.718, 'HL', '--']
     
     return stationInfo
 
@@ -89,7 +88,9 @@ def get_TSMIPStationInfo(tsmip_path):
     stationInfo = {}
     for l in sta_eew:
         tmp = l.split()
-        stationInfo[tmp[0]] = [tmp[5], tmp[4], tmp[-2]]
+        
+        # station_code: [lontitude, latitude, factor, channel, location]
+        stationInfo[tmp[0]] = [tmp[5], tmp[4], tmp[-2], tmp[1][:-1], tmp[3]]
 
     return stationInfo
 
@@ -101,7 +102,7 @@ def get_Palert_CWB_coord(key, stationInfo):
         sta = k.split('_')[0]
 
         try:
-            output.append(stationInfo[sta])
+            output.append(stationInfo[sta][:3])
             station.append(sta)
             flag.append(True)
             # print("flag")
@@ -686,7 +687,7 @@ def station_selection(sel_chunk, station_list, opt, build_table=False, n_station
                     output.append(o[0])
         print('Partial station list: ', len(output))
         return output, table
-
+    
     elif opt == 'TSMIP':
         lon_split = np.array([120.91])
         lat_split = np.array([21.9009 , 24.03495, 26.169  ])
@@ -770,6 +771,8 @@ def ForTSMIP_station_selection(stationInfo, target_length):
     sta = []
     must_contain = ['J', 'I', 'H', 'G', 'E', 'F']       # 這些分區中的測站全數保留
     total_length = len(stationInfo)
+    if target_length == -1:
+        target_length = total_length
     downsampling_rate = target_length / total_length
 
     print('Before selection, station: ', len(stationInfo))
@@ -815,3 +818,14 @@ def ForTSMIP_station_selection(stationInfo, target_length):
     print("Result of TSMIP station selection -> uploading succeeded!")
 
     return sta
+
+# For Palert, 用地理位置分區
+def ForPalert_station_selection(stationInfo, n_stations):
+    stationInfo = sorted(stationInfo.items(), key = lambda x : x[1][0])
+
+    station_chunks = [stationInfo[n_stations*i:n_stations*i+n_stations] 
+                            for i in range(len(stationInfo)//n_stations)]
+    station_chunks += [stationInfo[n_stations*(len(stationInfo)//n_stations):]]
+
+    return station_chunks
+
