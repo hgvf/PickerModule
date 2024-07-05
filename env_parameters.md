@@ -1,8 +1,8 @@
 # Parameters of picker module
 
-```*```: 重要參數
-```!```: Predefined 參數，須按照說明使用
-```?```: Optional 參數，有需要再使用，或使用 default
+- ```*```: 重要參數
+- ```!```: Predefined 參數，須按照說明使用
+- ```?```: Optional 參數，有需要再使用，或使用 default
 
 
 ## Section1: MQTT-related
