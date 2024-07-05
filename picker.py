@@ -54,11 +54,13 @@ def Manager_Pavd():
 class Mqtt():
     def __init__(self,):
         
-        self.cnt = 0
+        # initialize the shared variables
         self.init_shared_params()
-
-        self.store_length = int(self.env_config['STORE_LENGTH'])
+        
+        # station selection
         self.station_chunk()
+
+        # start the mqtt 
         self.activate_mqtt()
 
     def on_connect(self, client, userdata, flags, rc):
@@ -66,10 +68,7 @@ class Mqtt():
             print("Connected with result code " + str(rc))
     
             for t in self.topic:
-                # print(t)
                 client.subscribe(t)
-
-            # client.subscribe("RSD24bits/#")
         else:
             print("Failed to connect, ", rc)
             client.disconnect()
@@ -96,15 +95,15 @@ class Mqtt():
         # append the data in package into shared waveform buffer
         startIndex = int(starttime*self.samp_rate) - int(self.waveform_buffer_start_time.value)
         
-        # if startIndex >= 0 and startIndex < self.store_length:
-        data = data.copy()
-        self.waveform_buffer[self.key_index[scnl]][startIndex:startIndex+nsamp] = torch.from_numpy(data)
+        if startIndex >= 0 and startIndex < self.store_length:
+            data = data.copy()
+            self.waveform_buffer[self.key_index[scnl]][startIndex:startIndex+nsamp] = torch.from_numpy(data)
     
-        # send information to module for calculating Pa, Pv, and Pd
-        if channel[-1] == 'Z':
-            msg_to_pavd = {scnl: data}
-            self.pavd_scnl.put(msg_to_pavd)
-    
+            # send information to module for calculating Pa, Pv, and Pd
+            if channel[-1] == 'Z':
+                msg_to_pavd = {scnl: data}
+                self.pavd_scnl.put(msg_to_pavd)
+         
     def on_disconnect(self, client, userdata, rc):
         if rc != 0:
             print("Unexpected disconnection: ", str(rc))
@@ -185,14 +184,14 @@ class Mqtt():
             stat.join()
 
     def init_shared_params(self):
-        self.n_buffer = 1
-
         # create multiprocessing manager to maintain the shared variables
         manager = Manager()
         self.env_config = manager.dict()
         for k, v in dotenv_values(".env").items():
             self.env_config[k] = v
+        
         self.samp_rate = int(self.env_config['SAMP_RATE'])
+        self.store_length = int(self.env_config['STORE_LENGTH'])
 
         # device
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  
@@ -311,7 +310,6 @@ class Mqtt():
 
         self.topic = topic
 
-
 def TimeMover(waveform_buffer, env_config, nowtime, waveform_buffer_start_time):
     print('Starting TimeMover...')
 
@@ -352,7 +350,7 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
             waveform_plot_TF, plot_info, waveform_plot_wf, waveform_plot_out, waveform_plot_picktime,
             notify_TF, toNotify_pickedCoord, n_notify, avg_pickingtime, median_pickingtime, n_pick, logfilename_stat, pick_stat_notify,
             pavd_sta):
-    
+
     print('Starting Picker...')
     
     local_env = {}
@@ -429,7 +427,7 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
                 system_hour = cur.hour
 
             # 已經是系統時間的隔天，檢查有沒有過舊的 log file，有的話將其刪除
-            if f"{system_year}-{system_month}-{system_day}" != f"{cur.year}-{cur.month}-{cur.day}":
+            if f"d{system_year}-{system_month}-{system_day}" != f"{cur.year}-{cur.month}-{cur.day}":
                 toDelete_picking = cur - timedelta(days=int(local_env['DELETE_PICKINGLOG_DAY']))
                 toDelete_notify = cur - timedelta(days=int(local_env['DELETE_NOTIFYLOG_DAY']))
 
@@ -452,8 +450,8 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
 
                 # 將每日統計結果傳給 Uploader
                 if len(pick_stat) > 0:
-                    avg_pickingtime.value = round((int(local_env['PREDICT_LENGTH']) - np.mean(pick_stat)) / int(self.local_env['SAMP_RATE']), 2)
-                    median_pickingtime.value = round((int(local_env['PREDICT_LENGTH']) - np.median(pick_stat)) / int(self.local_env['SAMP_RATE']), 2)
+                    avg_pickingtime.value = round((int(local_env['PREDICT_LENGTH']) - np.mean(pick_stat)) / int(local_env['SAMP_RATE']), 2)
+                    median_pickingtime.value = round((int(local_env['PREDICT_LENGTH']) - np.median(pick_stat)) / int(local_env['SAMP_RATE']), 2)
                     n_pick.value = len(pick_stat)
                 else:
                     avg_pickingtime.value = 0
@@ -738,7 +736,7 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
                     pif.write('\n')
                     pif.close()
 
-                print(f"(else)0 stations are picked! <- {cur}")   
+                print(f"(else)0 stations are picked! <- {cur}")  
 
             prev_key_index = cur_key_index
 
@@ -781,7 +779,7 @@ def Notifier(notify_TF, toNotify_pickedCoord, line_tokens, n_notify, CHECKPOINT_
                 picked_coord.append(toNotify_pickedCoord[i])
 
             cur_time = datetime.utcfromtimestamp(time.time())
-            trigger_plot_filename = f"{CHECKPOINT_TYPE}_{cur_time.year}-{cur_time.month}-{cur_time.day}_{cur_time.hour}:{cur_time.minute}:{cur_time.second}"
+            trigger_plot_filename = f"{CHECKPOINT_TYPE}_{cur_time.year}-{cur_time.month}-{cur_time.day}_{cur_time.hour}_{cur_time.minute}_{cur_time.second}"
             
             start = time.time()
             line_token_number = plot_taiwan(trigger_plot_filename, picked_coord, line_tokens, line_token_number, CHECKPOINT_TYPE)
@@ -879,7 +877,7 @@ def Shower(waveform_plot_TF, plot_info, waveform_plot_wf, waveform_plot_out, wav
             waveform_plot_TF.value *= 0
             continue
 
-# Upload to google drive
+# generating the daily report 
 def Stat(upload_TF, logfilename_stat, avg_pickingtime, median_pickingtime, n_pick, CHECKPOINT_TYPE, pick_stat_notify):
     print('Starting Uploader...')
 
@@ -888,27 +886,26 @@ def Stat(upload_TF, logfilename_stat, avg_pickingtime, median_pickingtime, n_pic
             continue
 
         try:
+            cur = datetime.fromtimestamp(time.time())
+            cur = cur - timedelta(days=1)
+
             # =========================== statistical ============================ #
-            try:
-                # 將 AI picker 昨日的 picking 統計數據寫成 log 檔
-                with open(logfilename_stat.value, 'a') as f:
-                    f.write('='*50)
-                    f.write('\n')
-                    f.write(f"{cur.year}-{cur.month}-{cur.day} AI picker statistical\n")
-                    f.write(f"Number of picked stations: {n_pick.value}\n")
-                    f.write(f"Number of picked stations in Line Notify: {pick_stat_notify.value}\n")
-                    f.write(f"Average picking time that model need (delay): {avg_pickingtime.value} s\n")
-                    f.write(f"Median picking time that model need (delay): {median_pickingtime.value} s\n")
-                    f.write('='*50)
-                    f.write('\n')
-            
-                if not os.path.exists(logfilename_stat.value):
-                    Path(logfilename_stat.value).touch()
+            # 將 AI picker 昨日的 picking 統計數據寫成 log 檔
+            with open(logfilename_stat.value, 'a') as f:
+                f.write('='*50)
+                f.write('\n')
+                f.write(f"{cur.year}-{cur.month}-{cur.day} AI picker statistical\n")
+                f.write(f"Number of picked stations: {n_pick.value}\n")
+                f.write(f"Number of picked stations in Line Notify: {pick_stat_notify.value}\n")
+                f.write(f"Average picking time that model need (delay): {avg_pickingtime.value} s\n")
+                f.write(f"Median picking time that model need (delay): {median_pickingtime.value} s\n")
+                f.write('='*50)
+                f.write('\n')
+        
+            if not os.path.exists(logfilename_stat.value):
+                Path(logfilename_stat.value).touch()
 
-                pick_stat_notify.value *= 0
-
-            except:
-                pass
+            pick_stat_notify.value *= 0
             # =========================== statistical ============================ #
 
             upload_TF.value *= 0.0
@@ -994,6 +991,7 @@ def Pavd_calculator(pavd_calc, waveform_comein, waveform_scnl, waveform_comein_l
             waveform_comein_length.value *= 0
             continue
 
+# sending information to Pavd_calculator
 def PavdModule_sender(CHECKPOINT_TYPE, SAMP_RATE, pavd_calc, waveform_comein, waveform_comein_length, pavd_scnl, waveform_scnl):
     
     # Send information into first Pavd module if idle
@@ -1031,13 +1029,12 @@ def PavdModule_sender(CHECKPOINT_TYPE, SAMP_RATE, pavd_calc, waveform_comein, wa
                 pif.close()
             pass
 
+# creating directory while activating the system
 def create_dir():
     if not os.path.exists('./log/picking'):
         os.makedirs('./log/picking')
     if not os.path.exists('./log/notify'):
         os.makedirs('./log/notify')
-    if not os.path.exists('./log/CWBPicker'):
-        os.makedirs('./log/CWBPicker')
     if not os.path.exists('./log/original_picking'):
         os.makedirs('./log/original_picking')
     if not os.path.exists('./log/exception'):
@@ -1054,9 +1051,8 @@ if __name__ == '__main__':
     
     # create the directories
     create_dir()
-       
+      
     # start the system
     # including mqtt, picker, ... modules
     mqttserver = Mqtt()
     mqttserver.start()
-      
