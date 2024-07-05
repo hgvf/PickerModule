@@ -265,7 +265,7 @@ class Mqtt():
         if source == 'Palert':
             station_chunks = ForPalert_station_selection(self.stationInfo, n_stations)
         elif source == 'TSMIP':
-            station_chunks = ForTSMIP_station_selection(self.stationInfo, n_stations)
+            station_chunks = ForTSMIP_station_selection(self.stationInfo)
         # TODO: CWASN
 
         # Check the chunk number
@@ -282,16 +282,6 @@ class Mqtt():
             else:
                 end_chunk = start_chunk+1
        
-        # === to delete === #
-        # self.partial_station_list = None
-        # if int(self.env_config["CHUNK"]) != -1:
-        #     # 如果是 TSMIP，額外再做分區，並把分區結果存下來
-        #     if self.env_config['SOURCE'] == 'TSMIP' and int(self.env_config['CHUNK']) != -1:
-        #         self.partial_station_list = ForTSMIP_station_selection(self.stationInfo, int(self.env_config["N_PREDICTION_STATION"]))
-
-        #     self.partial_station_list, _ = station_selection(sel_chunk=int(self.env_config["CHUNK"]), station_list=self.stationInfo, opt=self.env_config['SOURCE'], build_table=False, n_stations=int(self.env_config["N_PREDICTION_STATION"]))
-        # === to delete === #
-
         # Merge the chunk, generating the topic name
         topic = []
 
