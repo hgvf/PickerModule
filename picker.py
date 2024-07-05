@@ -201,13 +201,13 @@ class Mqtt():
         
         # get the station's info
         if self.env_config['SOURCE'] == 'Palert':
-            self.stationInfo = get_PalertStationInfo(self.env_config['PALERT_FILEPATH'])
+            self.stationInfo = get_PalertStationInfo(self.env_config['STATION_FILEPATH'])
         elif self.env_config['SOURCE'] == 'CWASN':
-            self.stationInfo = get_CWBStationInfo(self.env_config['STAEEW_FILEPATH'])
+            self.stationInfo = get_CWBStationInfo(self.env_config['STATION_FILEPATH'])
         elif self.env_config['SOURCE'] == 'TSMIP':
-            self.stationInfo = get_TSMIPStationInfo(self.env_config['TSMIP_FILEPATH'])
+            self.stationInfo = get_TSMIPStationInfo(self.env_config['STATION_FILEPATH'])
         else:
-            self.stationInfo = get_StationInfo(self.env_config['NSTA_FILEPATH'], (datetime.utcfromtimestamp(time.time()) + timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S.%f'))
+            self.stationInfo = get_StationInfo(self.env_config['STATION_FILEPATH'], (datetime.utcfromtimestamp(time.time()) + timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S.%f'))
 
         n_stations = int(self.env_config["N_PREDICTION_STATION"])
 
