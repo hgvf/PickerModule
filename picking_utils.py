@@ -786,57 +786,49 @@ def station_selection(sel_chunk, station_list, opt, build_table=False, n_station
         return [i[0] for i in station_chunks[start_chunk]], table
 
 # For TSMIP, 用 station_code 代碼再分區
-def ForTSMIP_station_selection(stationInfo, target_length):
-    sta = []
-    must_contain = ['J', 'I', 'H', 'G', 'E', 'F']       # 這些分區中的測站全數保留
-    total_length = len(stationInfo)
-    if target_length == -1:
-        target_length = total_length
-    downsampling_rate = target_length / total_length
+def ForTSMIP_station_selection(stationInfo):
+    lon_split = np.array([120.91])
+    lat_split = np.array([21.9009 , 24.03495, 26.169  ])
 
-    print('Before selection, station: ', len(stationInfo))
-    for s in stationInfo.keys():
-        if s[0] in must_contain:
-            sta.append(s)
+    # 依照經緯度切分測站
+    chunk = [[] for _ in range(6)]
+    for k, sta in stationInfo.items():
+        row, col = 0, 0
 
-    region = ['A', 'B', 'C', 'D']
-    a, b, c, d = [], [], [], []
-    for s in stationInfo.keys():
-        if s[0] == 'A':
-            a.append(s)
-        elif s[0] == 'B':
-            b.append(s)
-        elif s[0] == 'C':
-            c.append(s)
-        elif s[0] == 'D':
-            d.append(s)
-    
-    sta += random.sample(a,int(len(a)*downsampling_rate))
-    sta += random.sample(b,int(len(b)*downsampling_rate))
-    sta += random.sample(c,int(len(c)*downsampling_rate))
-    sta += random.sample(d,int(len(d)*downsampling_rate))
-    print('To predict station: ', len(sta))
+        row = bisect.bisect_left(lon_split, float(sta[0]))
+        col = bisect.bisect_left(lat_split, float(sta[1]))
 
-    # 分區結果記錄下來並上傳到 google drive
-    from pydrive.auth import GoogleAuth
-    from pydrive.drive import GoogleDrive
+        chunk[2*col+row].append((k, [float(sta[0]), float(sta[1]), float(sta[2]), sta[3], sta[4]]))
 
-    gauth = GoogleAuth()
-    gauth.LoadCredentialsFile("credentials.json")
-    drive = GoogleDrive(gauth)
+    output_chunks = []
+    output_chunks.append(chunk[3])
 
-    filepath = 'TSMIP_station_selction.log'
-    with open(filepath, 'a') as f:
-        for s in sta:
-            f.write(f"{s}\n")
-        f.close()
+    chunk[2] = sorted(chunk[2], key = lambda x : x[1][1])
+    output_chunks.append(chunk[2][len(chunk[2])//2:])
+    output_chunks.append(chunk[2][:len(chunk[2])//2])
+    output_chunks[-1] += chunk[0]
 
-    # file1 = drive.CreateFile({"title":filepath,"parents": [{"kind": "drive#fileLink", "id": "1SClOfjAZH2x6Ei693kSNtiWqnzvz0gHm"}]})
-    # file1.SetContentFile(filepath)
-    # file1.Upload() #檔案上傳
-    print("Result of TSMIP station selection -> uploading succeeded!")
+    chunk[5] = sorted(chunk[5], key = lambda x : x[1][0])
+    output_chunks.append(chunk[5][:50] + chunk[4])
+    output_chunks.append(chunk[5][50:])
 
-    return sta
+    new_output_chunks2 = []
+    for sta in output_chunks[2]:
+        if sta[1][1] <= 22.5:
+            output_chunks[0].append(sta)
+        else:
+            new_output_chunks2.append(sta)
+    output_chunks[2] = new_output_chunks2
+
+    new_output_chunks1 = []
+    for sta in output_chunks[1]:
+        if sta[1][1] >= 23.977:
+            output_chunks[3].append(sta)
+        else:
+            new_output_chunks1.append(sta)
+    output_chunks[1] = new_output_chunks1
+
+    return output_chunks
 
 # For Palert, 用地理位置分區
 def ForPalert_station_selection(stationInfo, n_stations):
