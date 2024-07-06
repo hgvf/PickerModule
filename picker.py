@@ -417,7 +417,7 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
                 system_hour = cur.hour
 
             # 已經是系統時間的隔天，檢查有沒有過舊的 log file，有的話將其刪除
-            if f"d{system_year}-{system_month}-{system_day}" != f"{cur.year}-{cur.month}-{cur.day}":
+            if f"{system_year}-{system_month}-{system_day}" != f"{cur.year}-{cur.month}-{cur.day}":
                 toDelete_picking = cur - timedelta(days=int(local_env['DELETE_PICKINGLOG_DAY']))
                 toDelete_notify = cur - timedelta(days=int(local_env['DELETE_NOTIFYLOG_DAY']))
 
