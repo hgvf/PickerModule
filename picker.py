@@ -69,6 +69,12 @@ class Mqtt():
     
             for t in self.topic:
                 client.subscribe(t)
+
+            cur = datetime.fromtimestamp(time.time())
+            with open(f"./log/mqtt/{cur.year}_{cur.month}_{cur.day}.log", 'a') as f:
+                f.write(f"MQTT connected at {cur.hour}:{cur.minute}:{cur.second}\n")
+                f.write('='*25)
+                f.write('\n')
         else:
             print("Failed to connect, ", rc)
             client.disconnect()
@@ -109,6 +115,12 @@ class Mqtt():
             print("Unexpected disconnection: ", str(rc))
             # Optionally, add reconnection logic here
             client.reconnect()
+
+            cur = datetime.fromtimestamp(time.time())
+            with open(f"./log/mqtt/{cur.year}_{cur.month}_{cur.day}.log", 'a') as f:
+                f.write(f"MQTT disconnected at {cur.hour}:{cur.minute}:{cur.second}\n")
+                f.write('='*25)
+                f.write('\n')
 
     def activate_mqtt(self):
         # 建立 MQTT Client 物件
@@ -595,137 +607,128 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
                     elif local_env['TABLE_OPTION'] == 'km':
                         res = post_picking(station_factor_coords, res, float(local_env["THRESHOLD_KM"]))                         # 用方圓幾公里來 pick
 
-                # calculate Pa, Pv, Pd
-                Pa, Pv, Pd, duration = picking_append_info(pavd_sta, toPredict_scnl, res, pred_trigger, int(local_env['PREDICT_LENGTH']), clear=True)
+                if np.any(res):
+                    # calculate Pa, Pv, Pd
+                    Pa, Pv, Pd, duration = picking_append_info(pavd_sta, toPredict_scnl, res, pred_trigger, int(local_env['PREDICT_LENGTH']), clear=True)
 
-                # calculate p_weight
-                P_weight = picking_p_weight_info(out, res, local_env['PWEIGHT_TYPE'], (float(local_env['PWEIGHT0']), float(local_env['PWEIGHT1']),float(local_env['PWEIGHT2'])),
-                                                    toPredict_wave[:, 0].clone(), pred_trigger)
+                    # calculate p_weight
+                    P_weight = picking_p_weight_info(out, res, local_env['PWEIGHT_TYPE'], (float(local_env['PWEIGHT0']), float(local_env['PWEIGHT1']),float(local_env['PWEIGHT2'])),
+                                                        toPredict_wave[:, 0].clone(), pred_trigger)
 
-                # send pick_msg to PICK_RING
-                pick_msg = gen_pickmsg(station_factor_coords, res, pred_trigger, toPredict_scnl, cur_waveform_starttime, (Pa, Pv, Pd), duration, P_weight, int(local_env['STORE_LENGTH']), int(local_env['PREDICT_LENGTH']))
+                    # send pick_msg to PICK_RING
+                    pick_msg = gen_pickmsg(station_factor_coords, res, pred_trigger, toPredict_scnl, cur_waveform_starttime, (Pa, Pv, Pd), duration, P_weight, int(local_env['STORE_LENGTH']), int(local_env['PREDICT_LENGTH']))
 
-                # get the filenames
-                cur = datetime.fromtimestamp(time.time())
-                picking_logfile = f"./log/picking/{local_env['CHECKPOINT_TYPE']}_{cur.year}-{cur.month}-{cur.day}_picking_chunk{local_env['CHUNK']}.log"
+                    # get the filenames
+                    cur = datetime.fromtimestamp(time.time())
+                    picking_logfile = f"./log/picking/{local_env['CHECKPOINT_TYPE']}_{cur.year}-{cur.month}-{cur.day}_picking_chunk{local_env['CHUNK']}.log"
 
-                # writing picking log file
-                picked_coord = []
-                notify_msg = []
-                with open(picking_logfile,"a") as pif:
-                    cur_time = datetime.utcfromtimestamp(time.time())
-                    pif.write('='*25)
-                    pif.write(f"Report time: {cur_time.strftime('%Y-%m-%d %H:%M:%S.%f')}")
-                    pif.write('='*25)
-                    pif.write('\n')
-                    for msg in pick_msg:
-                        #print(msg)
-                        tmp = msg.split(' ')
-
-                        # filtered by P_weight
-                        p_weight = int(tmp[-3])
-
-                        if p_weight <= int(local_env['REPORT_P_WEIGHT']):
-                            pif.write(" ".join(tmp[:6]))
-
-                            pick_time = datetime.utcfromtimestamp(float(tmp[-4]))
-                            # print('pick_time: ', pick_time)
-                            pif.write(f",\tp arrival time-> {pick_time.strftime('%Y-%m-%d %H:%M:%S.%f')}\n")
-                            pif.write(f"{msg}\n")
-
-                            # publish to mqtt (pick_msg)
-                            message = {
-                                "station" : tmp[0],
-                                "channel" : tmp[1],
-                                "network" : tmp[2],
-                                "location" : tmp[3],
-                                "longitude" : tmp[4],
-                                "latitude" : tmp[5],
-                                "pa" : tmp[6],
-                                "pv" : tmp[7],
-                                "pd" : tmp[8],
-                                "tc" : tmp[9],
-                                "ptime" : tmp[10],
-                                "weight" : tmp[11],
-                                "instrument" : tmp[12],
-                                "upd_sec" : tmp[13],
-                            }
-                            client.publish(f"{local_env['PICK_MSG_TOPIC']}/{local_env['CHECKPOINT_TYPE']}", json.dumps(message))
-
-                            picked_coord.append((float(tmp[4]), float(tmp[5])))
-                            notify_msg.append(msg)
-                            
-                    pif.close() 
-
-                # plotting the station on the map and send info to Line notify
-                cur_time = datetime.utcfromtimestamp(time.time())
-                print(f"{len(picked_coord)} stations are picked! <- {cur_time.strftime('%Y-%m-%d %H:%M:%S.%f')}")
-
-                if len(picked_coord) >= int(local_env["REPORT_NUM_OF_TRIGGER"]):
-                    # write line notify info into log file
-                    picking_logfile = f"./log/notify/{local_env['CHECKPOINT_TYPE']}_{cur_time.year}-{cur_time.month}-{cur_time.day}_notify_chunk{local_env['CHUNK']}.log"
+                    # writing picking log file
+                    picked_coord = []
+                    notify_msg = []
                     with open(picking_logfile,"a") as pif:
                         cur_time = datetime.utcfromtimestamp(time.time())
                         pif.write('='*25)
-                        pif.write(f"Notify time: {cur_time.strftime('%Y-%m-%d %H:%M:%S.%f')}")
+                        pif.write(f"Report time: {cur_time.strftime('%Y-%m-%d %H:%M:%S.%f')}")
                         pif.write('='*25)
                         pif.write('\n')
-                        for picked_idx, msg in enumerate(notify_msg):
-                            toNotify_pickedCoord[picked_idx] = picked_coord[picked_idx]
-
-                            # print(msg)
+                        for msg in pick_msg:
+                            #print(msg)
                             tmp = msg.split(' ')
-                            pif.write(" ".join(tmp[:6]))
 
-                            pick_time = datetime.utcfromtimestamp(float(tmp[-5]))
-                            pif.write(f",\tp arrival time-> {pick_time.strftime('%Y-%m-%d %H:%M:%S.%f')}\n")
-                            pif.write(f"{msg}\n")
+                            # filtered by P_weight
+                            p_weight = int(tmp[-3])
 
-                        pif.close()
-                        
-                    # send signal for Notifier to send Line notify
-                    if int(local_env['LINE_NOTIFY']) == 1:
-                        n_notify.value *= 0
-                        n_notify.value += len(picked_coord)
-                        notify_TF.value += 1
+                            if p_weight <= int(local_env['REPORT_P_WEIGHT']):
+                                pif.write(" ".join(tmp[:6]))
 
-                # 將 picked stations 的 picking time 加進 pick_stat 做統計
-                new_pred_trigger = gen_new_pred_trigger(res, pred_trigger, P_weight, int(local_env['REPORT_P_WEIGHT']))
-                pick_stat += new_pred_trigger
+                                pick_time = datetime.utcfromtimestamp(float(tmp[-4]))
+                                # print('pick_time: ', pick_time)
+                                pif.write(f",\tp arrival time-> {pick_time.strftime('%Y-%m-%d %H:%M:%S.%f')}\n")
+                                pif.write(f"{msg}\n")
 
-                # 將 picked stations 的 picking time 加進 pick_stat 做統計
-                if len(new_pred_trigger) >= int(local_env["REPORT_NUM_OF_TRIGGER"]):
-                    pick_stat_notify.value += len(new_pred_trigger)
+                                # publish to mqtt (pick_msg)
+                                message = {
+                                    "station" : tmp[0],
+                                    "channel" : tmp[1],
+                                    "network" : tmp[2],
+                                    "location" : tmp[3],
+                                    "longitude" : tmp[4],
+                                    "latitude" : tmp[5],
+                                    "pa" : tmp[6],
+                                    "pv" : tmp[7],
+                                    "pd" : tmp[8],
+                                    "tc" : tmp[9],
+                                    "ptime" : tmp[10],
+                                    "weight" : tmp[11],
+                                    "instrument" : tmp[12],
+                                    "upd_sec" : tmp[13],
+                                }
+                                client.publish(f"{local_env['PICK_MSG_TOPIC']}/{local_env['CHECKPOINT_TYPE']}", json.dumps(message))
 
-                # Let's send line notify for one of the picked stations
-                if int(local_env['PLOT_WAVEFORM']) == 1 and notify_TF.value == 1:
-                    idx = np.arange(len(res))
-                    tri_idx = idx[res]
-                    plot_idx = random.sample(range(len(tri_idx)), k=1)[0]
-                    
-                    if int(P_weight[plot_idx]) > int(local_env['REPORT_P_WEIGHT']):
-                        pass
-                    else:
-                        plot_info.value = pick_msg[plot_idx]
-                        waveform_plot_wf[0] = toPredict_wave[tri_idx[plot_idx], :3].cpu()
-                        waveform_plot_out[0] = out[tri_idx[plot_idx]].detach()
-                        waveform_plot_picktime.value = pred_trigger[tri_idx[plot_idx]]
-                        waveform_plot_TF.value += 1
+                                picked_coord.append((float(tmp[4]), float(tmp[5])))
+                                notify_msg.append(msg)
+                                
+                        pif.close() 
 
-            else:
-                # get the filenames
-                cur = datetime.fromtimestamp(time.time())
-                original_picking_logfile = f"./log/original_picking/{local_env['CHECKPOINT_TYPE']}_{cur.year}-{cur.month}-{cur.day}_original_picking_chunk{local_env['CHUNK']}.log"
-
-                # writing original picking log file
-                with open(original_picking_logfile,"a") as pif:
+                    # plotting the station on the map and send info to Line notify
                     cur_time = datetime.utcfromtimestamp(time.time())
-                    pif.write('='*25)
-                    pif.write(f"Report time: {cur_time.strftime('%Y-%m-%d %H:%M:%S.%f')}")
-                    pif.write('='*25)
-                    pif.write('\n')
-                    pif.close()
+                    print(f"{len(picked_coord)} stations are picked! <- {cur_time.strftime('%Y-%m-%d %H:%M:%S.%f')}")
 
+                    if len(picked_coord) >= int(local_env["REPORT_NUM_OF_TRIGGER"]):
+                        # write line notify info into log file
+                        picking_logfile = f"./log/notify/{local_env['CHECKPOINT_TYPE']}_{cur_time.year}-{cur_time.month}-{cur_time.day}_notify_chunk{local_env['CHUNK']}.log"
+                        with open(picking_logfile,"a") as pif:
+                            cur_time = datetime.utcfromtimestamp(time.time())
+                            pif.write('='*25)
+                            pif.write(f"Notify time: {cur_time.strftime('%Y-%m-%d %H:%M:%S.%f')}")
+                            pif.write('='*25)
+                            pif.write('\n')
+                            for picked_idx, msg in enumerate(notify_msg):
+                                toNotify_pickedCoord[picked_idx] = picked_coord[picked_idx]
+
+                                # print(msg)
+                                tmp = msg.split(' ')
+                                pif.write(" ".join(tmp[:6]))
+
+                                pick_time = datetime.utcfromtimestamp(float(tmp[-5]))
+                                pif.write(f",\tp arrival time-> {pick_time.strftime('%Y-%m-%d %H:%M:%S.%f')}\n")
+                                pif.write(f"{msg}\n")
+
+                            pif.close()
+                            
+                        # send signal for Notifier to send Line notify
+                        if int(local_env['LINE_NOTIFY']) == 1:
+                            n_notify.value *= 0
+                            n_notify.value += len(picked_coord)
+                            notify_TF.value += 1
+
+                    # 將 picked stations 的 picking time 加進 pick_stat 做統計
+                    new_pred_trigger = gen_new_pred_trigger(res, pred_trigger, P_weight, int(local_env['REPORT_P_WEIGHT']))
+                    pick_stat += new_pred_trigger
+
+                    # 將 picked stations 的 picking time 加進 pick_stat 做統計
+                    if len(new_pred_trigger) >= int(local_env["REPORT_NUM_OF_TRIGGER"]):
+                        pick_stat_notify.value += len(new_pred_trigger)
+
+                    # Let's send line notify for one of the picked stations
+                    if int(local_env['PLOT_WAVEFORM']) == 1 and notify_TF.value == 1:
+                        idx = np.arange(len(res))
+                        tri_idx = idx[res]
+                        plot_idx = random.sample(range(len(tri_idx)), k=1)[0]
+                        
+                        if int(P_weight[plot_idx]) > int(local_env['REPORT_P_WEIGHT']):
+                            pass
+                        else:
+                            plot_info.value = pick_msg[plot_idx]
+                            waveform_plot_wf[0] = toPredict_wave[tri_idx[plot_idx], :3].cpu()
+                            waveform_plot_out[0] = out[tri_idx[plot_idx]].detach()
+                            waveform_plot_picktime.value = pred_trigger[tri_idx[plot_idx]]
+                            waveform_plot_TF.value += 1
+                else:
+                    # plotting the station on the map and send info to Line notify
+                    cur_time = datetime.utcfromtimestamp(time.time())
+                    print(f"0 stations are picked! <- {cur_time.strftime('%Y-%m-%d %H:%M:%S.%f')}")
+            else:
                 print(f"(else)0 stations are picked! <- {cur}")  
 
             prev_key_index = cur_key_index
@@ -869,7 +872,7 @@ def Shower(waveform_plot_TF, plot_info, waveform_plot_wf, waveform_plot_out, wav
 
 # generating the daily report 
 def Stat(upload_TF, logfilename_stat, avg_pickingtime, median_pickingtime, n_pick, CHECKPOINT_TYPE, pick_stat_notify):
-    print('Starting Uploader...')
+    print('Starting Stat...')
 
     while True:
         if upload_TF.value == 0.0:
@@ -1031,6 +1034,8 @@ def create_dir():
         os.makedirs('./log/exception')
     if not os.path.exists('./log/statistical'):
         os.makedirs('./log/statistical')
+    if not os.path.exists('./log/mqtt'):
+        os.makedirs('./log/mqtt')
     if not os.path.exists('./plot'):
         os.makedirs('./plot')
     if not os.path.exists('./plot/trigger'):
