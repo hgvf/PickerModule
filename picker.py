@@ -199,7 +199,7 @@ class Mqtt():
         # create multiprocessing manager to maintain the shared variables
         manager = Manager()
         self.env_config = manager.dict()
-        for k, v in dotenv_values(".env").items():
+        for k, v in dotenv_values(sys.argv[1]).items():
             self.env_config[k] = v
         
         self.samp_rate = int(self.env_config['SAMP_RATE'])

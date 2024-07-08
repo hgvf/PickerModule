@@ -14,5 +14,6 @@ pip install .
 # Set the CUDA_VISIBLE_DEVICES environment variable
 ENV CUDA_VISIBLE_DEVICES=0
 
-RUN ["python", "picker.py"]
+# Select the environment file for each picker
+RUN ["python", "picker.py", "EQT_env"]
 
