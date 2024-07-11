@@ -11,6 +11,7 @@ from multiprocessing import Process, Manager, Array, Value, Queue, Pool
 from queue import Queue
 from multiprocessing.managers import BaseManager
 from itertools import compress
+from tqdm import tqdm
 
 import ctypes as c
 import random
@@ -21,10 +22,7 @@ import bisect
 import shutil
 import uuid
 import datetime
-
-from tqdm import tqdm
 import sys
-sys.path.append('../')
 
 from ctypes import c_char_p
 from dotenv import dotenv_values
@@ -43,6 +41,11 @@ import json
 import paho.mqtt.client as mqtt
 from obspy import read
 import struct
+
+# For RED-PAN
+sys.path.append('./redpan')
+import tensorflow as tf
+from REDPAN_tools.mtan_ARRU import unets
 
 # for shared lass object
 class MyManager(BaseManager): pass
@@ -382,8 +385,13 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
         model = sbm.EQTransformer(in_samples=int(local_env['PREDICT_LENGTH'])).to(device)
     elif local_env['CHECKPOINT_TYPE'] == 'phaseNet':
         model = sbm.PhaseNet(in_channels=3, classes=3, phases='NPS').to(device)
+    elif local_env['CHECKPOINT_TYPE'] == 'REDPAN':
+        frame = unets(input_size=(int(local_env['PREDICT_LENGTH']), 3))
+        model = frame.build_mtan_R2unet(
+            model_path, input_size=(int(local_env['PREDICT_LENGTH']), 3)
+        )  
 
-    if local_env['CHECKPOINT_TYPE'] != 'STALTA':
+    if local_env['CHECKPOINT_TYPE'] not in ['STALTA', 'REDPAN']:
         checkpoint = torch.load(model_path, map_location=device)
         model.load_state_dict(checkpoint['model'])
         model.eval()
@@ -428,6 +436,8 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
 
     toPredict_idx, toPredict_scnl = [], []
     prev_key_index = {}
+
+    gpu_devices = tf.config.experimental.list_physical_devices('CPU')
 
     while True:
         try:
@@ -570,10 +580,15 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
                 # for STA/LTA
                 elif local_env['CHECKPOINT_TYPE'] == 'STALTA':
                     original_res, pred_trigger, out = stalta(toPredict_wave, int(local_env['SHORT_WINDOW']), int(local_env['LONG_WINDOW']), float(local_env['THRESHOLD_LAMBDA']))
-
+                # for REDPAN
+                elif local_env['CHECKPOINT_TYPE'] == 'REDPAN':
+                    Picks, Masks = model.predict(toPredict_wave.permute(0,2,1).cpu().numpy())
+                    original_res, pred_trigger, out = REDPAN_evaluation(Picks, float(local_env["THRESHOLD_PROB"]))
+                
             # select the p-arrival time         
-            if local_env['CHECKPOINT_TYPE'] != 'STALTA':
+            if local_env['CHECKPOINT_TYPE'] not in ['STALTA', 'REDPAN']:
                 original_res, pred_trigger = evaluation(out, float(local_env["THRESHOLD_PROB"]), int(local_env["THRESHOLD_TRIGGER"]), local_env["THRESHOLD_TYPE"])
+
             original_res = np.logical_and(original_res, flag).tolist()
             
             # 寫 original res 的 log 檔

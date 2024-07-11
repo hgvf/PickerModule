@@ -1,0 +1,66 @@
+ ################ Section1: MQTT-related  ################
+MQTT_SERVER=140.118.127.89
+PORT=1883  
+TIMEOUT=6000
+WAVE_TOPIC=RSD24bits
+PICK_MSG_TOPIC=PICK24bits
+
+################ Section2: File path  ################
+# station information
+# Palert: palertlist.csv
+# TSMIP: sta_csmt_Z
+STATION_FILEPATH = ./nsta/palertlist.csv
+
+# For line notify
+# NOTIFY_TOKENS = ./nsta/notify_tokens.txt
+NOTIFY_TOKENS = ./nsta/waveform_tokens.txt
+WAVEFORM_TOKENS = ./nsta/waveform_tokens.txt
+PICKER_CHECKPOINT_PATH = ./checkpoints/REDPAN.hdf5
+
+################ Section3: Data-related ################
+CHUNK=0                                # Chunk of data, station split by lontitude and latitude (-1: don't split)
+SOURCE='Palert'                         # Data Source: Palert, TSMIP24Bit or CWASN24Bit
+STORE_LENGTH=6000                       # Length of waveform buffer
+PREDICT_LENGTH=3000
+N_PREDICTION_STATION=300                # Maximum number of station to predict
+SAMP_RATE=100
+CHANNEL='None'
+LOCATION='None'
+
+################ Section4: Picker-related ################
+CHECKPOINT_TYPE='REDPAN'                   # Model opt of picker
+THRESHOLD_TYPE="max"                    # Picking criteria of picker
+THRESHOLD_PROB=0.3                      # Probability threshold of picker
+THRESHOLD_TRIGGER=40                    # Continuous sample threshold of picker
+ZSCORE=1
+FILTER=1
+
+################ Section5: AvoidFP-related ################
+THRESHOLD_KM=20                        # 搜集測站方圓 x km 內的所有測站代碼
+THRESHOLD_NEIGHBOR=2                   # 如果某個測站方圓 THRESHOLD_KM km 內有 x 個測站也被 picked，則該測站就算真的被 picked
+NEAREST_STATION=5                      # 蒐集最靠近測站的 x 個周圍測站
+TABLE_OPTION='nearest'                 # nearest: 選擇觀察最靠近的幾個測站, km: 選擇距離 x 公里內的幾個測站
+AVOID_FP=1                             # 是否套用避免過多誤報機制 (0/1)
+PICK_GAP=1                             # 規定每次 picking 的絕對時間要比上次晚一秒以上
+
+################ Section6: Notify-related ################
+REPORT_P_WEIGHT=1                      # 測站的 P_weight 要小於此值才算 picked
+REPORT_NUM_OF_TRIGGER=1                # 幾個測站被 pick 才發報
+VALID_PICKTIME=2500                    # picking time 要在 x-th sample 之後才算 picked
+LINE_NOTIFY=1                          # Line notify ? (0 or 1)
+PLOT_WAVEFORM=1                        # Line notify 時是否順便將測站波形畫出
+
+################ Section 7: P's weight-related ################
+PWEIGHT0=0.5                          
+PWEIGHT1=0.4  
+PWEIGHT2=0.35    
+PWEIGHT_TYPE='prob'                    # 決定 p_weight 的方式: prob (probability of picker) or snr
+
+################ Section 8: System-related ################
+SLEEP_SECOND=10                        # Picker 剛啟動要待機多久
+N_PAVD_PROCESS=7                       # 要開多少 process 去計算 Pa, Pv, and Pds
+SECOND_MOVE_BUFFER=5                   # 每過幾秒要將 buffer 往前移動
+MIN_SECOND_ITERATION=0.75              # Picker 限制每個 iteration 至少要執行幾秒\
+DELETE_PICKINGLOG_DAY=90
+DELETE_NOTIFYLOG_DAY=90
+

@@ -4,11 +4,12 @@ import pandas as pd
 import random
 import torch
 import requests
+import bisect
 from datetime import datetime, timedelta
 from staticmap import StaticMap, CircleMarker, Polygon, Line
 from scipy import integrate
 from math import sin, cos, sqrt, atan2, radians
-import bisect
+from scipy.signal import find_peaks
 
 # get the station's factor, latitude, lontitude, starttime, and endtime
 def get_StationInfo(nsta_path, starttime):
@@ -252,7 +253,7 @@ def picking_p_weight_info(pred, res, Pweight_type, threshold, CHECKPOINT_TYPE, Z
 
         weight0, weight1, weight2 = threshold
         if Pweight_type == 'prob':
-            if CHECKPOINT_TYPE == 'STALTA':
+            if CHECKPOINT_TYPE == 'STALTA' or CHECKPOINT_TYPE == 'REDPAN':
                 value = pred[i]
             else:
                 value = torch.max(pred[i]).item()
@@ -843,3 +844,27 @@ def ForPalert_station_selection(stationInfo, n_stations):
 
     return station_chunks
 
+def REDPAN_evaluation(picks, p_threshold):
+    res = []
+    pred_trigger = []
+    prob = []
+
+    # picks: (batch, PREDICT_LENGTH, 3)
+    for p in picks:
+        out = p[:, 0]
+
+        pred_p = find_peaks(out, height=p_threshold, distance=1)[0]
+        prob.append(np.max(out))
+
+        if len(pred_p) == 0:
+            res.append(False)
+            pred_trigger.append(0)
+            continue
+        
+        candidate = [peak_cand for peak_cand in pred_p] 
+
+        res.append(True)
+        pred_trigger.append(candidate[np.argmax(out[candidate])])
+
+    return res, pred_trigger, prob
+    
