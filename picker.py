@@ -571,7 +571,7 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
                 elif local_env['CHECKPOINT_TYPE'] == 'STALTA':
                     original_res, pred_trigger, out = stalta(toPredict_wave, int(local_env['SHORT_WINDOW']), int(local_env['LONG_WINDOW']), float(local_env['THRESHOLD_LAMBDA']))
 
-            # select the p-arrival time 
+            # select the p-arrival time         
             if local_env['CHECKPOINT_TYPE'] != 'STALTA':
                 original_res, pred_trigger = evaluation(out, float(local_env["THRESHOLD_PROB"]), int(local_env["THRESHOLD_TRIGGER"]), local_env["THRESHOLD_TYPE"])
             original_res = np.logical_and(original_res, flag).tolist()

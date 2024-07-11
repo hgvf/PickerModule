@@ -284,16 +284,16 @@ def stalta(wf, short_window, long_window, threshold_lambda):
         out = classic_sta_lta(w[0], short_window, long_window)
         trigger = trigger_onset(out, threshold_lambda, 1)
         
+        prob.append(np.max(out))
+
         if len(trigger) > 0:
             res.append(True)
         else:
             res.append(False)
             pred_trigger.append(0)
-            prob.append(0)
             continue
             
         candidate = [p[0] for p in trigger] 
         pred_trigger.append(candidate[np.argmax(out[candidate])])
-        prob.append(np.max(out[candidate]))
 
     return res, pred_trigger, prob
