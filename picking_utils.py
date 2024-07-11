@@ -243,7 +243,7 @@ def picking_append_info(EEW_sta, toPredict_scnl, res, pred_trigger, wavelength, 
     return Pa, Pv, Pd, duration
 
 # generate the p's weight
-def picking_p_weight_info(pred, res, Pweight_type, threshold, Zcomponent_trc=None, pred_trigger=None):
+def picking_p_weight_info(pred, res, Pweight_type, threshold, CHECKPOINT_TYPE, Zcomponent_trc=None, pred_trigger=None):
     p_weight = []
     for i in range(len(res)):
         # not picked
@@ -252,7 +252,10 @@ def picking_p_weight_info(pred, res, Pweight_type, threshold, Zcomponent_trc=Non
 
         weight0, weight1, weight2 = threshold
         if Pweight_type == 'prob':
-            value = torch.max(pred[i]).item()
+            if CHECKPOINT_TYPE == 'STALTA':
+                value = pred[i]
+            else:
+                value = torch.max(pred[i]).item()
 
         elif Pweight_type == 'snr':
             noise_start_idx = pred_trigger[i]-100 if pred_trigger[i]-100 >= 0 else 0
