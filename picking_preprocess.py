@@ -95,3 +95,16 @@ def STFT(wave):
     real = real[:, :12]
 
     return torch.FloatTensor(np.transpose(real, (0, 2, 1)))
+
+# For STA/LTA
+def characteristic(wf):
+    # demean
+    wf = wf - torch.mean(wf, dim=-1, keepdims=True)
+
+    # diff
+    diff = torch.diff(wf, dim=-1)
+    
+    results = torch.cat((wf[..., 0].unsqueeze(-1), wf[..., 1:] + diff ** 2), dim=-1)
+    
+    return results
+

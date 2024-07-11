@@ -2,10 +2,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
+import numpy as np
 
 from conformer import *
 from conformer.encoder import *
 from conformer.activation import GLU
+
+# For conventional pickers
+from obspy.signal.trigger import classic_sta_lta, trigger_onset
 
 class PositionalEncoding(nn.Module):
 
@@ -270,3 +274,26 @@ class GRADUATE(nn.Module):
             seg_out = 0
         # print("out",out.shape)
         return out
+
+def stalta(wf, short_window, long_window, threshold_lambda):
+    res = []
+    pred_trigger = []
+    prob = []
+
+    for w in wf:
+        out = classic_sta_lta(w[0], short_window, long_window)
+        trigger = trigger_onset(out, threshold_lambda, 1)
+        
+        if len(trigger) > 0:
+            res.append(True)
+        else:
+            res.append(False)
+            pred_trigger.append(0)
+            prob.append(0)
+            continue
+            
+        candidate = [p[0] for p in trigger] 
+        pred_trigger.append(candidate[np.argmax(out[candidate])])
+        prob.append(np.max(out[candidate]))
+
+    return res, pred_trigger, prob

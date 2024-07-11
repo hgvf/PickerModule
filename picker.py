@@ -80,9 +80,7 @@ class Mqtt():
             client.disconnect()
 
     def on_message(self, client, userdata, msg):
-        # 0.0003 s on average
-
-        # parse the package
+        # parse the package: 0.0003 s on average
         msg = msg.payload
         network, station, location, channel, nsamp, samprate, starttime, endtime = struct.unpack(f"<2s5s2s3sIddd", msg[0:40])
         network = network.decode().strip()
@@ -300,15 +298,25 @@ class Mqtt():
         # topic template: source/network/station/location/channel
         # ex. CWASN24Bit/TW/ALS/10/HLZ
         topic_prefix = self.env_config['WAVE_TOPIC']
-        if start_chunk == -1:
+        if start_chunk == -1 and self.env_config['CHANNEL'] == 'None' and self.env_config['LOCATION'] == 'None':
             topic.append(f"{topic_prefix}/TW/#")
         else:
-            channel_tail = ['Z', 'N', 'E']
+            if self.env_config['CHANNEL'] != 'None':
+                channel_tail = self.env_config['CHANNEL'].split(',')
+            else:
+                channel_tail = ['Z', 'N', 'E']
+
+            location_list = []
+            if self.env_config['LOCATION'] != 'None':
+                location_list = self.env_config['LOCATION'].split(',')
+    
             for ch in range(start_chunk, end_chunk):
                 # station_chunks => station_code: [lontitude, latitude, factor, channel, location]
                 for sta in station_chunks[ch]:
                     for chn in channel_tail:
-                        topic.append(f"{topic_prefix}/TW/{sta[0]}/{sta[1][4]}/{sta[1][3]}{chn}")
+                        # filter the location
+                        if len(location_list) == 0 or sta[1][4] in location_list:
+                            topic.append(f"{topic_prefix}/TW/{sta[0]}/{sta[1][4]}/{sta[1][3]}{chn}")
 
         self.topic = topic
 
@@ -375,12 +383,16 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
     elif local_env['CHECKPOINT_TYPE'] == 'phaseNet':
         model = sbm.PhaseNet(in_channels=3, classes=3, phases='NPS').to(device)
 
-    checkpoint = torch.load(model_path, map_location=device)
-    model.load_state_dict(checkpoint['model'])
-    model.eval()
+    if local_env['CHECKPOINT_TYPE'] != 'STALTA':
+        checkpoint = torch.load(model_path, map_location=device)
+        model.load_state_dict(checkpoint['model'])
+        model.eval()
 
     # channel name for specific seismographic network
-    channel_tail = ['Z', 'N', 'E']
+    if local_env['CHANNEL'] != 'None':
+        channel_tail = local_env['CHANNEL'].split(',')
+    else:
+        channel_tail = ['Z', 'N', 'E']
 
     # butterworth filter
     N=5
@@ -534,6 +546,9 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
             if int(local_env['ZSCORE']) == 1:
                 toPredict_wave = z_score(toPredict_wave)
 
+            # For STA/LTA, characteristic function
+            if local_env['CHECKPOINT_TYPE'] == 'STALTA':
+                toPredict_wave = characteristic(toPredict_wave)
             if int(local_env['FILTER']) == 1:
                 toPredict_wave = filter(toPredict_wave, sos)
 
@@ -552,9 +567,13 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
                 # for phaseNet
                 elif local_env['CHECKPOINT_TYPE'] == 'phaseNet':
                     out = model(toPredict_wave)[:, 0].detach().squeeze().cpu()
-                
+                # for STA/LTA
+                elif local_env['CHECKPOINT_TYPE'] == 'STALTA':
+                    original_res, pred_trigger, out = stalta(toPredict_wave, int(local_env['SHORT_WINDOW']), int(local_env['LONG_WINDOW']), float(local_env['THRESHOLD_LAMBDA']))
+
             # select the p-arrival time 
-            original_res, pred_trigger = evaluation(out, float(local_env["THRESHOLD_PROB"]), int(local_env["THRESHOLD_TRIGGER"]), local_env["THRESHOLD_TYPE"])
+            if local_env['CHECKPOINT_TYPE'] != 'STALTA':
+                original_res, pred_trigger = evaluation(out, float(local_env["THRESHOLD_PROB"]), int(local_env["THRESHOLD_TRIGGER"]), local_env["THRESHOLD_TYPE"])
             original_res = np.logical_and(original_res, flag).tolist()
             
             # 寫 original res 的 log 檔
@@ -564,7 +583,7 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
 
                 # calculate p_weight
                 P_weight = picking_p_weight_info(out, original_res, local_env['PWEIGHT_TYPE'], (float(local_env['PWEIGHT0']), float(local_env['PWEIGHT1']),float(local_env['PWEIGHT2'])),
-                                                    toPredict_wave[:, 0].clone(), pred_trigger)
+                                                    local_env['CHECKPOINT_TYPE'], toPredict_wave[:, 0].clone(), pred_trigger)
 
                 # send pick_msg to PICK_RING
                 original_pick_msg = gen_pickmsg(station_factor_coords, original_res, pred_trigger, toPredict_scnl, cur_waveform_starttime, (Pa, Pv, Pd), duration, P_weight, int(local_env['STORE_LENGTH']), int(local_env['PREDICT_LENGTH']))
