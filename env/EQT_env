@@ -3,7 +3,7 @@ MQTT_SERVER=140.118.127.89
 PORT=1883  
 TIMEOUT=6000
 WAVE_TOPIC=RSD24bits
-PICK_MSG_TOPIC=PICK24Bit
+PICK_MSG_TOPIC=PICK24bits
 
 ################ Section2: File path  ################
 # station information
@@ -24,6 +24,8 @@ STORE_LENGTH=6000                       # Length of waveform buffer
 PREDICT_LENGTH=3000
 N_PREDICTION_STATION=800                # Maximum number of station to predict
 SAMP_RATE=100
+CHANNEL='None'
+LOCATION='None'
 
 ################ Section4: Picker-related ################
 CHECKPOINT_TYPE='eqt'                   # Model opt of picker

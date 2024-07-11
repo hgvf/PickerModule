@@ -20,12 +20,12 @@ PICKER_CHECKPOINT_PATH = ./checkpoints/EQT.pt
 ################ Section3: Data-related ################
 CHUNK=-1                                # Chunk of data, station split by lontitude and latitude (-1: don't split)
 SOURCE='Palert'                         # Data Source: Palert, TSMIP24Bit or CWASN24Bit
-STORE_LENGTH=4000                       # Length of waveform buffer
-PREDICT_LENGTH=2000
+STORE_LENGTH=6000                       # Length of waveform buffer
+PREDICT_LENGTH=3000
 N_PREDICTION_STATION=800                # Maximum number of station to predict
 SAMP_RATE=100
 CHANNEL='Z'
-LOCATION='--'
+LOCATION='None'
 
 ################ Section4: Picker-related ################
 CHECKPOINT_TYPE='STALTA'                   # Model opt of picker
@@ -33,9 +33,9 @@ THRESHOLD_TYPE="max"                    # Picking criteria of picker
 THRESHOLD_PROB=0.5                      # Probability threshold of picker
 THRESHOLD_TRIGGER=40                    # Continuous sample threshold of picker
 SHORT_WINDOW=30
-LONG_WINDOW=350
-THRESHOLD_LAMBDA=4
-ZSCORE=1
+LONG_WINDOW=500
+THRESHOLD_LAMBDA=14
+ZSCORE=0
 FILTER=1
 
 ################ Section5: AvoidFP-related ################
@@ -43,7 +43,7 @@ THRESHOLD_KM=20                        # 搜集測站方圓 x km 內的所有測
 THRESHOLD_NEIGHBOR=2                   # 如果某個測站方圓 THRESHOLD_KM km 內有 x 個測站也被 picked，則該測站就算真的被 picked
 NEAREST_STATION=5                      # 蒐集最靠近測站的 x 個周圍測站
 TABLE_OPTION='nearest'                 # nearest: 選擇觀察最靠近的幾個測站, km: 選擇距離 x 公里內的幾個測站
-AVOID_FP=1                             # 是否套用避免過多誤報機制 (0/1)
+AVOID_FP=0                             # 是否套用避免過多誤報機制 (0/1)
 PICK_GAP=1                             # 規定每次 picking 的絕對時間要比上次晚一秒以上
 
 ################ Section6: Notify-related ################
@@ -54,9 +54,9 @@ LINE_NOTIFY=0                          # Line notify ? (0 or 1)
 PLOT_WAVEFORM=1                        # Line notify 時是否順便將測站波形畫出
 
 ################ Section 7: P's weight-related ################
-PWEIGHT0=6                          
-PWEIGHT1=5  
-PWEIGHT2=4.5    
+PWEIGHT0=15                          
+PWEIGHT1=14.5  
+PWEIGHT2=14    
 PWEIGHT_TYPE='prob'                    # 決定 p_weight 的方式: prob (probability of picker) or snr
 
 ################ Section 8: System-related ################
