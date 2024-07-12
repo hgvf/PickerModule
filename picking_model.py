@@ -278,13 +278,13 @@ class GRADUATE(nn.Module):
 def stalta(wf, short_window, long_window, threshold_lambda):
     res = []
     pred_trigger = []
-    prob = []
+    out_prob = []
 
     for w in wf:
         out = classic_sta_lta(w[0], short_window, long_window)
         trigger = trigger_onset(out, threshold_lambda, 1)
         
-        prob.append(np.max(out))
+        out_prob.append(out)
 
         if len(trigger) > 0:
             res.append(True)
@@ -296,4 +296,5 @@ def stalta(wf, short_window, long_window, threshold_lambda):
         candidate = [p[0] for p in trigger] 
         pred_trigger.append(candidate[np.argmax(out[candidate])])
 
-    return res, pred_trigger, prob
+    return res, pred_trigger, torch.FloatTensor(out_prob)
+

@@ -18,7 +18,7 @@ WAVEFORM_TOKENS = ./nsta/waveform_tokens.txt
 PICKER_CHECKPOINT_PATH = ./checkpoints/REDPAN.hdf5
 
 ################ Section3: Data-related ################
-CHUNK=0                                # Chunk of data, station split by lontitude and latitude (-1: don't split)
+CHUNK=1-3                                # Chunk of data, station split by lontitude and latitude (-1: don't split)
 SOURCE='Palert'                         # Data Source: Palert, TSMIP24Bit or CWASN24Bit
 STORE_LENGTH=6000                       # Length of waveform buffer
 PREDICT_LENGTH=3000
@@ -30,7 +30,7 @@ LOCATION='None'
 ################ Section4: Picker-related ################
 CHECKPOINT_TYPE='REDPAN'                   # Model opt of picker
 THRESHOLD_TYPE="max"                    # Picking criteria of picker
-THRESHOLD_PROB=0.3                      # Probability threshold of picker
+THRESHOLD_PROB=0.4                      # Probability threshold of picker
 THRESHOLD_TRIGGER=40                    # Continuous sample threshold of picker
 ZSCORE=1
 FILTER=1
@@ -51,9 +51,9 @@ LINE_NOTIFY=1                          # Line notify ? (0 or 1)
 PLOT_WAVEFORM=1                        # Line notify 時是否順便將測站波形畫出
 
 ################ Section 7: P's weight-related ################
-PWEIGHT0=0.5                          
-PWEIGHT1=0.4  
-PWEIGHT2=0.35    
+PWEIGHT0=0.35                          
+PWEIGHT1=0.32 
+PWEIGHT2=0.3    
 PWEIGHT_TYPE='prob'                    # 決定 p_weight 的方式: prob (probability of picker) or snr
 
 ################ Section 8: System-related ################

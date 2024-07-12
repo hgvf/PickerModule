@@ -5,6 +5,7 @@ import random
 import torch
 import requests
 import bisect
+import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 from staticmap import StaticMap, CircleMarker, Polygon, Line
 from scipy import integrate
@@ -253,10 +254,7 @@ def picking_p_weight_info(pred, res, Pweight_type, threshold, CHECKPOINT_TYPE, Z
 
         weight0, weight1, weight2 = threshold
         if Pweight_type == 'prob':
-            if CHECKPOINT_TYPE == 'STALTA' or CHECKPOINT_TYPE == 'REDPAN':
-                value = pred[i]
-            else:
-                value = torch.max(pred[i]).item()
+            value = torch.max(pred[i]).item()
 
         elif Pweight_type == 'snr':
             noise_start_idx = pred_trigger[i]-100 if pred_trigger[i]-100 >= 0 else 0
@@ -847,14 +845,13 @@ def ForPalert_station_selection(stationInfo, n_stations):
 def REDPAN_evaluation(picks, p_threshold):
     res = []
     pred_trigger = []
-    prob = []
+    out_prob = []
 
     # picks: (batch, PREDICT_LENGTH, 3)
     for p in picks:
         out = p[:, 0]
-
         pred_p = find_peaks(out, height=p_threshold, distance=1)[0]
-        prob.append(np.max(out))
+        out_prob.append(out)
 
         if len(pred_p) == 0:
             res.append(False)
@@ -866,5 +863,5 @@ def REDPAN_evaluation(picks, p_threshold):
         res.append(True)
         pred_trigger.append(candidate[np.argmax(out[candidate])])
 
-    return res, pred_trigger, prob
+    return res, pred_trigger, torch.FloatTensor(out_prob)
     
