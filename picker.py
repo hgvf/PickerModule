@@ -222,7 +222,12 @@ class Mqtt():
         else:
             self.stationInfo = get_StationInfo(self.env_config['STATION_FILEPATH'], (datetime.utcfromtimestamp(time.time()) + timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S.%f'))
 
-        n_stations = int(self.env_config["N_PREDICTION_STATION"])
+        chunk = self.env_config['CHUNK']
+        if len(chunk) > 2:
+            n_chunk = int(chunk[-1]) - int(chunk[0]) + 1
+            n_stations = n_chunk * int(self.env_config["N_PREDICTION_STATION"])
+        else:
+            n_stations = int(self.env_config["N_PREDICTION_STATION"])
 
         # a deque from time-3000 to time for time index
         self.nowtime = Value('d', int(time.time()*100))
@@ -582,15 +587,16 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
                     original_res, pred_trigger, out = stalta(toPredict_wave, int(local_env['SHORT_WINDOW']), int(local_env['LONG_WINDOW']), float(local_env['THRESHOLD_LAMBDA']))
                 # for REDPAN
                 elif local_env['CHECKPOINT_TYPE'] == 'REDPAN':
-                    Picks, Masks = model.predict(toPredict_wave.permute(0,2,1).cpu().numpy())
+                    Picks, _ = model.predict(toPredict_wave.permute(0,2,1).cpu().numpy())
                     original_res, pred_trigger, out = REDPAN_evaluation(Picks, float(local_env["THRESHOLD_PROB"]))
                 
             # select the p-arrival time         
             if local_env['CHECKPOINT_TYPE'] not in ['STALTA', 'REDPAN']:
                 original_res, pred_trigger = evaluation(out, float(local_env["THRESHOLD_PROB"]), int(local_env["THRESHOLD_TRIGGER"]), local_env["THRESHOLD_TYPE"])
 
-            original_res = np.logical_and(original_res, flag).tolist()
-            
+            # original_res = [True for _ in range(len(original_res))]
+            # pred_trigger = [2900 for _ in range(len(original_res))]
+
             # 寫 original res 的 log 檔
             if np.any(original_res):   
                 # calculate Pa, Pv, Pd
@@ -647,7 +653,7 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
 
                     # calculate p_weight
                     P_weight = picking_p_weight_info(out, res, local_env['PWEIGHT_TYPE'], (float(local_env['PWEIGHT0']), float(local_env['PWEIGHT1']),float(local_env['PWEIGHT2'])),
-                                                        toPredict_wave[:, 0].clone(), pred_trigger)
+                                                        local_env['CHECKPOINT_TYPE'], toPredict_wave[:, 0].clone(), pred_trigger)
 
                     # send pick_msg to PICK_RING
                     pick_msg = gen_pickmsg(station_factor_coords, res, pred_trigger, toPredict_scnl, cur_waveform_starttime, (Pa, Pv, Pd), duration, P_weight, int(local_env['STORE_LENGTH']), int(local_env['PREDICT_LENGTH']))
@@ -749,13 +755,13 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
                         idx = np.arange(len(res))
                         tri_idx = idx[res]
                         plot_idx = random.sample(range(len(tri_idx)), k=1)[0]
-                        
+
                         if int(P_weight[plot_idx]) > int(local_env['REPORT_P_WEIGHT']):
                             pass
                         else:
                             plot_info.value = pick_msg[plot_idx]
                             waveform_plot_wf[0] = toPredict_wave[tri_idx[plot_idx], :3].cpu()
-                            waveform_plot_out[0] = out[tri_idx[plot_idx]].detach()
+                            waveform_plot_out[0] = torch.FloatTensor(out[tri_idx[plot_idx]])
                             waveform_plot_picktime.value = pred_trigger[tri_idx[plot_idx]]
                             waveform_plot_TF.value += 1
                 else:
