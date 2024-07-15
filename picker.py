@@ -23,6 +23,7 @@ import shutil
 import uuid
 import datetime
 import sys
+import gc
 
 from ctypes import c_char_p
 from dotenv import dotenv_values
@@ -557,7 +558,8 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
             # 1) convert traces to acceleration
             # 2) 1-45Hz bandpass filter
             # 3) Z-score normalization
-            # 4) calculate features: Characteristic, STA, LTA            
+            # 4) calculate features: Characteristic, STA, LTA      
+            unnorm_wave = toPredict_wave.clone()      
             if int(local_env['ZSCORE']) == 1:
                 toPredict_wave = z_score(toPredict_wave)
 
@@ -584,12 +586,15 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
                     out = model(toPredict_wave)[:, 0].detach().squeeze().cpu()
                 # for STA/LTA
                 elif local_env['CHECKPOINT_TYPE'] == 'STALTA':
-                    original_res, pred_trigger, out = stalta(toPredict_wave, int(local_env['SHORT_WINDOW']), int(local_env['LONG_WINDOW']), float(local_env['THRESHOLD_LAMBDA']))
+                    original_res, pred_trigger, out = stalta(toPredict_wave.cpu().numpy(), int(local_env['SHORT_WINDOW']), int(local_env['LONG_WINDOW']), float(local_env['THRESHOLD_LAMBDA']))
                 # for REDPAN
                 elif local_env['CHECKPOINT_TYPE'] == 'REDPAN':
                     Picks, _ = model.predict(toPredict_wave.permute(0,2,1).cpu().numpy())
                     original_res, pred_trigger, out = REDPAN_evaluation(Picks, float(local_env["THRESHOLD_PROB"]))
-                
+            #plt.plot(out[0])
+
+            #plt.savefig(f"./tmp/{time.time()}.png")
+            #plt.clf()
             # select the p-arrival time         
             if local_env['CHECKPOINT_TYPE'] not in ['STALTA', 'REDPAN']:
                 original_res, pred_trigger = evaluation(out, float(local_env["THRESHOLD_PROB"]), int(local_env["THRESHOLD_TRIGGER"]), local_env["THRESHOLD_TYPE"])
@@ -760,7 +765,7 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
                             pass
                         else:
                             plot_info.value = pick_msg[plot_idx]
-                            waveform_plot_wf[0] = toPredict_wave[tri_idx[plot_idx], :3].cpu()
+                            waveform_plot_wf[0] = unnorm_wave[tri_idx[plot_idx], :3].cpu()
                             waveform_plot_out[0] = torch.FloatTensor(out[tri_idx[plot_idx]])
                             waveform_plot_picktime.value = pred_trigger[tri_idx[plot_idx]]
                             waveform_plot_TF.value += 1
@@ -779,6 +784,8 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
                 if cur - system_record_time >= float(local_env['MIN_SECOND_ITERATION']):
                     break
 
+            # avg: 0.2 s
+            _ = gc.collect()
         except Exception as e:
             # log the pending 
             # print(e)
@@ -880,7 +887,8 @@ def Shower(waveform_plot_TF, plot_info, waveform_plot_wf, waveform_plot_out, wav
             plt.axvline(x=waveform_plot_picktime.value, color='r')
 
             plt.subplot(414)
-            plt.ylim([-0.05, 1.05])
+            if CHECKPOINT_TYPE != 'STALTA':
+                plt.ylim([-0.05, 1.05])
             plt.axvline(x=waveform_plot_picktime.value, color='r')
             plt.plot(waveform_plot_out[0])
             
