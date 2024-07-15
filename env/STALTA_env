@@ -43,14 +43,14 @@ THRESHOLD_KM=20                        # 搜集測站方圓 x km 內的所有測
 THRESHOLD_NEIGHBOR=2                   # 如果某個測站方圓 THRESHOLD_KM km 內有 x 個測站也被 picked，則該測站就算真的被 picked
 NEAREST_STATION=5                      # 蒐集最靠近測站的 x 個周圍測站
 TABLE_OPTION='nearest'                 # nearest: 選擇觀察最靠近的幾個測站, km: 選擇距離 x 公里內的幾個測站
-AVOID_FP=0                             # 是否套用避免過多誤報機制 (0/1)
+AVOID_FP=1                             # 是否套用避免過多誤報機制 (0/1)
 PICK_GAP=1                             # 規定每次 picking 的絕對時間要比上次晚一秒以上
 
 ################ Section6: Notify-related ################
 REPORT_P_WEIGHT=1                      # 測站的 P_weight 要小於此值才算 picked
 REPORT_NUM_OF_TRIGGER=1                # 幾個測站被 pick 才發報
 VALID_PICKTIME=2500                    # picking time 要在 x-th sample 之後才算 picked
-LINE_NOTIFY=0                          # Line notify ? (0 or 1)
+LINE_NOTIFY=1                          # Line notify ? (0 or 1)
 PLOT_WAVEFORM=1                        # Line notify 時是否順便將測站波形畫出
 
 ################ Section 7: P's weight-related ################

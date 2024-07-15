@@ -846,7 +846,7 @@ def REDPAN_evaluation(picks, p_threshold):
     res = []
     pred_trigger = []
     out_prob = []
-
+    
     # picks: (batch, PREDICT_LENGTH, 3)
     for p in picks:
         out = p[:, 0]
