@@ -1,0 +1,50 @@
+################ MQTT-related  ################
+MQTT_SERVER=140.118.127.89
+PORT=1883  
+TIMEOUT=6000
+WAVE_TOPIC=RSD24bits
+PICK_MSG_TOPIC=PICK24bits
+
+################ Filepaths of environments  ################
+EQT_ENV=./env/ET_env
+phaseNet_ENV=./env/phaseNet_env
+GRADUATE_ENV=./env/GRADUATE_env
+REDPAN_ENV=./env/REDPAN_env
+STALTA_ENV=./env/STALTA_env
+
+################ Activate the picker(s)  ################
+EQT=1
+phaseNet=1
+GRADUATE=0
+REDPAN=0
+STALTA=1
+
+################ Device of picker(s)  ################
+EQT_DEVICE=cuda:0
+phaseNet_DEVICE=cuda:0
+GRADUATE_DEVICE=cuda:1
+REDPAN_DEVICE=cuda:0
+STALTA_DEVICE=cpu
+
+################ File path ################
+NOTIFY_TOKENS=./nsta/waveform_tokens.txt
+WAVEFORM_TOKENS=./nsta/waveform_tokens.txt
+STATION_FILEPATH=./nsta/palertlist.csv
+
+################ Data-related ################
+CHUNK=-1
+SOURCE='Palert' 
+SAMP_RATE=100
+STORE_LENGTH=6000
+N_PREDICTION_STATION=800
+CHANNEL='None'
+LOCATION='None'
+
+################ System-related ################
+SLEEP_SECOND=10                        # Picker 剛啟動要待機多久
+N_PAVD_PROCESS=7                       # 要開多少 process 去計算 Pa, Pv, and Pds
+SECOND_MOVE_BUFFER=5                   # 每過幾秒要將 buffer 往前移動
+MIN_SECOND_ITERATION=0.75              # Picker 限制每個 iteration 至少要執行幾秒\
+DELETE_PICKINGLOG_DAY=90
+DELETE_NOTIFYLOG_DAY=90
+
