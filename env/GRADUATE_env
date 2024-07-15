@@ -15,13 +15,14 @@ STATION_FILEPATH = ./nsta/palertlist.csv
 # NOTIFY_TOKENS = ./nsta/notify_tokens.txt
 NOTIFY_TOKENS = ./nsta/waveform_tokens.txt
 WAVEFORM_TOKENS = ./nsta/waveform_tokens.txt
-PICKER_CHECKPOINT_PATH = ./checkpoints/GRADUATE_1000.pt
+PICKER_CHECKPOINT_PATH = ./checkpoints/GRADUATE_2000.pt
 
-################ Section3: Data-related ################
-CHUNK=0                                # Chunk of data, station split by lontitude and latitude (-1: don't split)
+#######
+######### Section3: Data-related ################
+CHUNK=4-6                                # Chunk of data, station split by lontitude and latitude (-1: don't split)
 SOURCE='Palert'                         # Data Source: Palert, TSMIP24Bit or CWASN24Bit
-STORE_LENGTH=2000                       # Length of waveform buffer
-PREDICT_LENGTH=1000
+STORE_LENGTH=4000                       # Length of waveform buffer
+PREDICT_LENGTH=2000
 N_PREDICTION_STATION=150                # Maximum number of station to predict
 SAMP_RATE=100
 CHANNEL='None'
@@ -30,7 +31,7 @@ LOCATION='None'
 ################ Section4: Picker-related ################
 CHECKPOINT_TYPE='GRADUATE'                   # Model opt of picker
 THRESHOLD_TYPE="max"                    # Picking criteria of picker
-THRESHOLD_PROB=0.45                      # Probability threshold of picker
+THRESHOLD_PROB=0.6                      # Probability threshold of picker
 THRESHOLD_TRIGGER=40                    # Continuous sample threshold of picker
 ZSCORE=1
 FILTER=1
@@ -46,14 +47,14 @@ PICK_GAP=1                             # 規定每次 picking 的絕對時間要
 ################ Section6: Notify-related ################
 REPORT_P_WEIGHT=1                      # 測站的 P_weight 要小於此值才算 picked
 REPORT_NUM_OF_TRIGGER=1                # 幾個測站被 pick 才發報
-VALID_PICKTIME=500                    # picking time 要在 x-th sample 之後才算 picked
+VALID_PICKTIME=1500                    # picking time 要在 x-th sample 之後才算 picked
 LINE_NOTIFY=1                          # Line notify ? (0 or 1)
 PLOT_WAVEFORM=1                        # Line notify 時是否順便將測站波形畫出
 
 ################ Section 7: P's weight-related ################
-PWEIGHT0=0.7                          
-PWEIGHT1=0.6  
-PWEIGHT2=0.5    
+PWEIGHT0=0.8                          
+PWEIGHT1=0.7  
+PWEIGHT2=0.6    
 PWEIGHT_TYPE='prob'                    # 決定 p_weight 的方式: prob (probability of picker) or snr
 
 ################ Section 8: System-related ################

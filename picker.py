@@ -200,15 +200,15 @@ class Mqtt():
     def init_shared_params(self):
         # create multiprocessing manager to maintain the shared variables
         manager = Manager()
+        # device
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  
+        
         self.env_config = manager.dict()
         for k, v in dotenv_values(sys.argv[1]).items():
             self.env_config[k] = v
-        
+            
         self.samp_rate = int(self.env_config['SAMP_RATE'])
         self.store_length = int(self.env_config['STORE_LENGTH'])
-
-        # device
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  
 
         # get the candidate line notify tokens
         self.notify_tokens, self.waveform_tokens = load_tokens(self.env_config['NOTIFY_TOKENS'], self.env_config['WAVEFORM_TOKENS'])
@@ -239,7 +239,6 @@ class Mqtt():
 
         # a dict for checking scnl's index of waveform
         self.key_index = manager.dict()
-      
         self.waveform_buffer = torch.zeros((n_stations*3, int(self.env_config["STORE_LENGTH"]))).share_memory_()
 
         # parameters for Shower
@@ -589,18 +588,15 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
                     original_res, pred_trigger, out = stalta(toPredict_wave.cpu().numpy(), int(local_env['SHORT_WINDOW']), int(local_env['LONG_WINDOW']), float(local_env['THRESHOLD_LAMBDA']))
                 # for REDPAN
                 elif local_env['CHECKPOINT_TYPE'] == 'REDPAN':
-                    Picks, _ = model.predict(toPredict_wave.permute(0,2,1).cpu().numpy())
-                    original_res, pred_trigger, out = REDPAN_evaluation(Picks, float(local_env["THRESHOLD_PROB"]))
-            #plt.plot(out[0])
+                    toPredict_wave = tf.convert_to_tensor(toPredict_wave.permute(0,2,1).cpu().numpy(), dtype=tf.float32)
+                    Picks, _ = model(toPredict_wave)
 
-            #plt.savefig(f"./tmp/{time.time()}.png")
-            #plt.clf()
+                    # Picks, _ = model.predict(toPredict_wave.permute(0,2,1).cpu().numpy())
+                    original_res, pred_trigger, out = REDPAN_evaluation(Picks.numpy(), float(local_env["THRESHOLD_PROB"]))
+     
             # select the p-arrival time         
             if local_env['CHECKPOINT_TYPE'] not in ['STALTA', 'REDPAN']:
                 original_res, pred_trigger = evaluation(out, float(local_env["THRESHOLD_PROB"]), int(local_env["THRESHOLD_TRIGGER"]), local_env["THRESHOLD_TYPE"])
-
-            # original_res = [True for _ in range(len(original_res))]
-            # pred_trigger = [2900 for _ in range(len(original_res))]
 
             # 寫 original res 的 log 檔
             if np.any(original_res):   
@@ -609,7 +605,7 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
 
                 # calculate p_weight
                 P_weight = picking_p_weight_info(out, original_res, local_env['PWEIGHT_TYPE'], (float(local_env['PWEIGHT0']), float(local_env['PWEIGHT1']),float(local_env['PWEIGHT2'])),
-                                                    local_env['CHECKPOINT_TYPE'], toPredict_wave[:, 0].clone(), pred_trigger)
+                                                    local_env['CHECKPOINT_TYPE'], unnorm_wave[:, 0].clone(), pred_trigger)
 
                 # send pick_msg to PICK_RING
                 original_pick_msg = gen_pickmsg(station_factor_coords, original_res, pred_trigger, toPredict_scnl, cur_waveform_starttime, (Pa, Pv, Pd), duration, P_weight, int(local_env['STORE_LENGTH']), int(local_env['PREDICT_LENGTH']))
@@ -785,7 +781,7 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
                     break
 
             # avg: 0.2 s
-            _ = gc.collect()
+            # _ = gc.collect()
         except Exception as e:
             # log the pending 
             # print(e)
