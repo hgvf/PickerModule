@@ -283,7 +283,7 @@ def stalta(wf, short_window, long_window, threshold_lambda):
     for w in wf:
         out = classic_sta_lta(w[0], short_window, long_window)
         trigger = trigger_onset(out, threshold_lambda, 1)
-        
+       
         out_prob.append(out)
 
         if len(trigger) > 0:
