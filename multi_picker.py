@@ -683,13 +683,6 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
 
                     pif.close()
                 
-                # 區域型 picking
-                if int(local_env['AVOID_FP']) == 1:
-                    if local_env['TABLE_OPTION'] == 'nearest':
-                        res = neighbor_picking(neighbor_table, station_list, res, original_res, int(local_env['THRESHOLD_NEIGHBOR']))   # 用鄰近測站來 pick
-                    elif local_env['TABLE_OPTION'] == 'km':
-                        res = post_picking(station_factor_coords, res, float(local_env["THRESHOLD_KM"]))                         # 用方圓幾公里來 pick
-
                 if np.any(res):
                     # calculate Pa, Pv, Pd
                     Pa, Pv, Pd, duration = picking_append_info(pavd_sta, toPredict_scnl, res, pred_trigger, int(local_env['PREDICT_LENGTH']), clear=True)
@@ -901,6 +894,14 @@ class MQTT_DecisionMaking():
         for k, v in dotenv_values(sys.argv[1]).items():
             self.env_config[k] = v
 
+        DecisionMaker = Process(target=DecisionMaking, args=(self.env_config, self.pick_msg, self.system_time, self.stationInfo,
+                                                            self.notify_TF, self.n_notify, self.toNotify_pickedCoord))
+        DecisionMaker.start()
+
+        notifier = Process(target=Notifier, args=(self.notify_TF, self.toNotify_pickedCoord, self.notify_tokens, self.n_notify,))
+
+        DecisionMaker.join()
+
     def on_connect(self, client, userdata, flags, rc):
         if rc == 0:
             print("Connected with result code " + str(rc))
@@ -924,8 +925,8 @@ class MQTT_DecisionMaking():
         cur = time.time()
         # append to list for neighbor picking
         if cur - msg['ptime'] <= 5:
-            pass
-
+            self.pick_msg.put(msg)
+            self.system_time = time.time()
         
     def on_disconnect(self, client, userdata, rc):
         if rc != 0:
@@ -958,7 +959,159 @@ class MQTT_DecisionMaking():
         self.client.loop_start()
 
     def init_shared_params(self):
-        self.pick_msg = []
+        manager = Manager()
+        self.pick_msg = manager.Queue()
+        self.system_time = Value('d', int(time.time()))
+
+        # get the station's info
+        if self.env_config['SOURCE'] == 'Palert':
+            self.stationInfo = get_PalertStationInfo(self.env_config['STATION_FILEPATH'])
+        elif self.env_config['SOURCE'] == 'CWASN':
+            self.stationInfo = get_CWBStationInfo(self.env_config['STATION_FILEPATH'])
+        elif self.env_config['SOURCE'] == 'TSMIP':
+            self.stationInfo = get_TSMIPStationInfo(self.env_config['STATION_FILEPATH'])
+        else:
+            self.stationInfo = get_StationInfo(self.env_config['STATION_FILEPATH'], (datetime.utcfromtimestamp(time.time()) + timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S.%f'))
+
+        # parameters for notifier
+        self.notify_TF = Value('d', int(0))
+        self.toNotify_pickedCoord = manager.dict()
+        self.n_notify = Value('d', int(0))
+        # get the candidate line notify tokens
+        self.notify_tokens, _ = load_tokens(self.env_config['NOTIFY_TOKENS'], self.env_config['WAVEFORM_TOKENS'])
+
+def DecisionMaker(env_config, pick_msg, system_time, stationInfo, notify_TF, n_notify, toNotify_pickedCoord):
+    print("Starting Decision Maker")
+
+    # localize the env_config dictionary
+    local_env = {}
+    for k, v in env_config.items():
+        local_env[k] = v
+
+    # Table for neighbor picking
+    _, neighbor_table = station_selection(sel_chunk=local_env["CHUNK"], station_list=stationInfo, opt=local_env['SOURCE'], build_table=True, n_stations=int(local_env["N_PREDICTION_STATION"]), threshold_km=float(local_env['THRESHOLD_KM']),
+                                            nearest_station=int(local_env['NEAREST_STATION']), option=local_env['TABLE_OPTION'])
+
+    # mqtt server for publishing pick_msg
+    client = mqtt.Client()
+    client.connect(env_config['MQTT_SERVER'], int(env_config['PORT']), int(env_config['TIMEOUT']))
+
+    while True:
+        try:
+            cur_time = time.time()
+            if cur_time - system_time >= 0.1 and pick_msg.qsize() > 0:
+                # Localize & clear the pick_msg list
+                pick_sta = []
+                pick_other = []
+                while pick_msg.qsize() >= 1:
+                    package = pick_msg.get()
+
+                    if int(package['weight']) <= int(local_env['REPORT_P_WEIGHT']):
+                        pick_sta.append(package['station'])
+                        pick_other.append(package)
+
+                # Neighbor picking
+                if int(local_env['AVOID_FP']) == 1:
+                    res = [True for _ in range(len(pick_sta))]
+                    res = neighbor_picking(neighbor_table, pick_sta, res, res, int(local_env['THRESHOLD_NEIGHBOR']))   # 用鄰近測站來 pick
+                    
+                # Publish the result to MQTT broker
+                cur = datetime.fromtimestamp(time.time())
+                picking_logfile = f"./log/picking/DecisionMaking_{cur.year}-{cur.month}-{cur.day}_picking_chunk.log"
+                toPublish_package = np.array(pick_other)[res]
+
+                # writing picking log file
+                picked_coord = []
+                with open(picking_logfile,"a") as pif:
+                    cur_time = datetime.utcfromtimestamp(time.time())
+                    pif.write('='*25)
+                    pif.write(f"Report time: {cur_time.strftime('%Y-%m-%d %H:%M:%S.%f')}")
+                    pif.write('='*25)
+                    pif.write('\n')
+
+                    for package in toPublish_package:
+                        pick_time = datetime.utcfromtimestamp(float(package['ptime']))
+                        pif.write(f"{package['station']}_{package['channel']}_{package['network']}_{package['location']},\tp arrival time-> {pick_time.strftime('%Y-%m-%d %H:%M:%S.%f')}\n")
+                        pif.write(f"{package['station']}\t{package['channel']}\t{package['network']}\t{package['location']}\t")
+                        pif.write(f"{package['longitude']}\t{package['latitude']}\t")
+                        pif.write(f"{package['pa']}\t{package['pv']}\t{package['pd']}\t{package['tc']}\t")
+                        pif.write(f"{package['ptime']}\t{package['weight']}\t{package['instrument']}\t{package['upd_sec']}\n")
+                        
+                        picked_coord.append((float(package['longitude']), float(package['latitude'])))
+
+                        client.publish(f"{local_env['PICK_MSG_TOPIC']}/", json.dumps(package))
+                
+                    pif.close()
+
+                 # plotting the station on the map and send info to Line notify
+                cur_time = datetime.utcfromtimestamp(time.time())
+                print(f"{len(picked_coord)} stations are picked! <- {cur_time.strftime('%Y-%m-%d %H:%M:%S.%f')}")
+
+                # send signal for Notifier to send Line notify
+                if len(picked_coord) >= int(local_env["REPORT_NUM_OF_TRIGGER"]) and int(local_env['LINE_NOTIFY']) == 1:
+                    n_notify.value *= 0
+                    n_notify.value += len(picked_coord)
+                    notify_TF.value += 1
+                    for picked_idx in range(len(picked_coord)):
+                        toNotify_pickedCoord[picked_idx] = picked_coord[picked_idx]
+
+            else:
+                continue
+
+        except Exception as e:
+            # log the pending 
+            cur = datetime.fromtimestamp(time.time())
+            picking_logfile = f"./log/exception/DecisionMaking_{cur.year}-{cur.month}-{cur.day}.log"
+            with open(picking_logfile,"a") as pif:
+                pif.write('='*25)
+                pif.write('\n')
+                pif.write(f"Time -> {cur.strftime('%Y-%m-%d %H:%M:%S.%f')}\n")
+                pif.write(f"Error message (DecisionMaker): {e}\n")
+                pif.write(f"Trace back (DecisionMaker): {traceback.format_exc()}\n")
+                pif.write('='*25)
+                pif.write('\n')
+                pif.close()
+            continue
+
+# notifing 
+def Notifier(notify_TF, toNotify_pickedCoord, line_tokens, n_notify):
+    print('Starting Notifier...')
+
+    token_number, line_token_number = 0, 0
+    while True:
+        # pending until notify_TF = True, then send notify
+        if notify_TF.value == 0.0 or n_notify.value == 0:
+            continue
+        
+        try:
+            picked_coord = []
+            for i in range(int(n_notify.value)):
+                picked_coord.append(toNotify_pickedCoord[i])
+
+            cur_time = datetime.utcfromtimestamp(time.time())
+            trigger_plot_filename = f"DecisionMaking_{cur_time.year}-{cur_time.month}-{cur_time.day}_{cur_time.hour}_{cur_time.minute}_{cur_time.second}"
+            
+            start = time.time()
+            line_token_number = plot_taiwan(trigger_plot_filename, picked_coord, line_tokens, line_token_number, 'DecisionMaking')
+
+            notify_TF.value *= 0
+
+        except Exception as e:
+            # log the pending 
+            cur = datetime.fromtimestamp(time.time())
+            picking_logfile = f"./log/exception/DecisionMaking_{cur.year}-{cur.month}-{cur.day}.log"
+            with open(picking_logfile,"a") as pif:
+                pif.write('='*25)
+                pif.write('\n')
+                pif.write(f"Time -> {cur.strftime('%Y-%m-%d %H:%M:%S.%f')}\n")
+                pif.write(f"Error message (Notifier): {e}\n")
+                pif.write(f"Trace back (Shower): {traceback.format_exc()}\n")
+                pif.write('='*25)
+                pif.write('\n')
+                pif.close()
+
+            notify_TF.value *= 0
+            continue
 
 # creating directory while activating the system
 def create_dir():
