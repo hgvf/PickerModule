@@ -12,8 +12,9 @@ cd seisbench  && \
 pip install . 
 
 # Set the CUDA_VISIBLE_DEVICES environment variable
-ENV CUDA_VISIBLE_DEVICES=0
+# ENV CUDA_VISIBLE_DEVICES=0
 
 # Select the environment file for each picker
-RUN ["python", "picker.py", "EQT_env"]
+# RUN ["python", "picker.py", "./env/EQT_env"]
 
+CMD [ "python3" ]
