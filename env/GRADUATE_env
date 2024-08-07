@@ -17,8 +17,7 @@ NOTIFY_TOKENS = ./nsta/waveform_tokens.txt
 WAVEFORM_TOKENS = ./nsta/waveform_tokens.txt
 PICKER_CHECKPOINT_PATH = ./checkpoints/GRADUATE_2000.pt
 
-#######
-######### Section3: Data-related ################
+################ Section3: Data-related ################
 CHUNK=4-6                                # Chunk of data, station split by lontitude and latitude (-1: don't split)
 SOURCE='Palert'                         # Data Source: Palert, TSMIP24Bit or CWASN24Bit
 STORE_LENGTH=4000                       # Length of waveform buffer
@@ -35,6 +34,8 @@ THRESHOLD_PROB=0.6                      # Probability threshold of picker
 THRESHOLD_TRIGGER=40                    # Continuous sample threshold of picker
 ZSCORE=1
 FILTER=1
+THRESHOLD_PA=0.5
+THRESHOLD_ZCROSS=12
 
 ################ Section5: AvoidFP-related ################
 THRESHOLD_KM=20                        # 搜集測站方圓 x km 內的所有測站代碼

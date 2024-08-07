@@ -34,6 +34,8 @@ THRESHOLD_PROB=0.4                      # Probability threshold of picker
 THRESHOLD_TRIGGER=40                    # Continuous sample threshold of picker
 ZSCORE=1
 FILTER=1
+THRESHOLD_PA=0.5
+THRESHOLD_ZCROSS=12
 
 ################ Section5: AvoidFP-related ################
 THRESHOLD_KM=20                        # 搜集測站方圓 x km 內的所有測站代碼

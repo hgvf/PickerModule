@@ -298,3 +298,126 @@ def stalta(wf, short_window, long_window, threshold_lambda):
 
     return res, pred_trigger, torch.FloatTensor(out_prob)
 
+# for Ensemble picking
+class PositionEmbedding(nn.Module):
+    def __init__(self, emb_dim, min_lat, max_lat, min_lon, max_lon):
+        super(PositionEmbedding, self).__init__()
+        self.emb_dim = emb_dim
+
+        lat_dim = self.emb_dim // 5
+        lon_dim = self.emb_dim // 5
+
+        self.lat_coeff = 2 * np.pi * 1. / min_lat * ((min_lat / max_lat) ** (np.arange(lat_dim) / lat_dim))
+        self.lon_coeff = 2 * np.pi * 1. / min_lon * ((min_lon / max_lon) ** (np.arange(lon_dim) / lon_dim))
+
+        lat_sin_mask = np.arange(emb_dim) % 5 == 0
+        lat_cos_mask = np.arange(emb_dim) % 5 == 1
+        lon_sin_mask = np.arange(emb_dim) % 5 == 2
+        lon_cos_mask = np.arange(emb_dim) % 5 == 3
+
+        self.mask = np.zeros(emb_dim)
+        self.mask[lat_sin_mask] = np.arange(lat_dim)
+        self.mask[lat_cos_mask] = lat_dim + np.arange(lat_dim)
+        self.mask[lon_sin_mask] = 2 * lat_dim + np.arange(lon_dim)
+        self.mask[lon_cos_mask] = 2 * lat_dim + lon_dim + np.arange(lon_dim)
+
+        self.mask = torch.LongTensor(self.mask.astype('int'))
+
+    def forward(self, station_list):
+        lat_base = station_list[:, :, 0:1] * self.lat_coeff
+        lon_base = station_list[:, :, 1:2] * self.lon_coeff
+
+        output = torch.cat([torch.sin(lat_base), torch.cos(lat_base),
+                    torch.sin(lon_base), torch.cos(lon_base),], dim=-1)
+        output = output[:, :, self.mask]
+
+        return output.to(dtype=torch.float32)
+
+class Ensemble(nn.Module):
+    def __init__(self, emb_dim, min_lat, max_lat, min_lon, max_lon, d_ffn, pos_emb=True):
+        super(Ensemble, self).__init__()
+
+        self.ispos_emb = pos_emb
+        if pos_emb:
+            self.pos_emb = PositionEmbedding(emb_dim, min_lat, max_lat, min_lon, max_lon)
+
+        prenorm_dim = emb_dim+6 if pos_emb else 8
+        self.pre_norm_coord_attn = nn.Sequential(nn.Linear(prenorm_dim, d_ffn),
+                        nn.ReLU(),
+                        nn.LayerNorm(d_ffn),)
+        
+        self.coord_attn = nn.MultiheadAttention(embed_dim=d_ffn, num_heads=2, batch_first=True)
+
+        self.predict = nn.Linear(d_ffn, 1)
+        self.out_actfn = nn.Sigmoid()
+
+    def forward(self, x):
+        '''
+        x: from picking message: (lat, lon, ptime, p-weight, Pa, Pv, picker_type)
+
+        Usage:
+            station_list = [[[121.89, 23.56, 3.25, 0, 0.4, 0.03, 0], [121.75, 23.4, 3.9, 1, 0.4, 0.03, 1]], [[121.89, 21.56, 2.25, 1, 0.4, 0.03, 2], [120.75, 23.47, 4, 1, 0.4, 0.03, 3]]]
+            station_list = torch.FloatTensor(station_list)
+
+            min_lon = torch.min(station_list[:, :, 0]) 
+            min_lat = torch.min(station_list[:, :, 1])
+            max_lon = torch.max(station_list[:, :, 0]) 
+            max_lat = torch.max(station_list[:, :, 1]) 
+            
+            m = Ensemble(20, min_lat, max_lat, min_lon, max_lon)
+            m(station_list)
+        ''' 
+        if self.ispos_emb:
+            coord = x[:, :, :2]
+
+            # coord_posemb: (batch, n_stations, emb_dim)
+            coord_posemb = self.pos_emb(coord)
+            
+            # station vector: (batch, n_stations, emb_dim+4)
+            station_vector = torch.cat([coord_posemb, x[:, :, 2:]], dim=-1)
+        else:
+            station_vector = x
+        
+        hidden_state = self.pre_norm_coord_attn(station_vector)
+        hidden_state, _ = self.coord_attn(hidden_state, hidden_state, hidden_state)
+        
+        # predict
+        out = self.out_actfn(self.predict(hidden_state))
+        
+        return out
+
+# For Ensemble picking (Machine learning classifier)
+def ML_classifier(clf, toPredict):
+    '''
+    Training
+    from sklearn.svm import SVC
+
+    clf = SVC(probability=True)
+
+    # 100 sampels, 8 features for each sample
+    X = torch.rand(100, 8)
+
+    # output probability for each sample (binary classification)
+    y = torch.randint(0, 2, (100,))
+
+    # fitting 
+    clf.fit(X, y)
+
+    # inferencing
+    predicted_probabilities = clf.predict_proba(torch.rand(10, 8))
+    '''
+
+    res = []
+
+    out_prob = clf.predict_proba(toPredict)
+    print(out_prob)
+    for o in out_prob:
+        pred = np.argmax(o)
+
+        if pred == 0:
+            res.append(False)
+        else:
+            res.append(True)
+
+    return res
+    

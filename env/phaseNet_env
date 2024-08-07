@@ -34,13 +34,15 @@ THRESHOLD_PROB=0.5                      # Probability threshold of picker
 THRESHOLD_TRIGGER=40                    # Continuous sample threshold of picker
 ZSCORE=1
 FILTER=0
+THRESHOLD_PA=0.5
+THRESHOLD_ZCROSS=12
 
 ################ Section5: AvoidFP-related ################
 THRESHOLD_KM=20                        # 搜集測站方圓 x km 內的所有測站代碼
 THRESHOLD_NEIGHBOR=2                   # 如果某個測站方圓 THRESHOLD_KM km 內有 x 個測站也被 picked，則該測站就算真的被 picked
 NEAREST_STATION=5                      # 蒐集最靠近測站的 x 個周圍測站
 TABLE_OPTION='nearest'                 # nearest: 選擇觀察最靠近的幾個測站, km: 選擇距離 x 公里內的幾個測站
-AVOID_FP=1                             # 是否套用避免過多誤報機制 (0/1)
+AVOID_FP=0                             # 是否套用避免過多誤報機制 (0/1)
 PICK_GAP=1                             # 規定每次 picking 的絕對時間要比上次晚一秒以上
 
 ################ Section6: Notify-related ################
@@ -57,7 +59,7 @@ PWEIGHT2=0.55
 PWEIGHT_TYPE='prob'                    # 決定 p_weight 的方式: prob (probability of picker) or snr
 
 ################ Section 8: System-related ################
-SLEEP_SECOND=30                        # Picker 剛啟動要待機多久
+SLEEP_SECOND=10                        # Picker 剛啟動要待機多久
 N_PAVD_PROCESS=7                       # 要開多少 process 去計算 Pa, Pv, and Pds
 SECOND_MOVE_BUFFER=5                   # 每過幾秒要將 buffer 往前移動
 MIN_SECOND_ITERATION=0.75              # Picker 限制每個 iteration 至少要執行幾秒\

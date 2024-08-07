@@ -57,7 +57,6 @@ def Manager_Pavd():
 
 class Mqtt():
     def __init__(self,):
-        
         # initialize the shared variables
         self.init_shared_params()
         
@@ -86,6 +85,7 @@ class Mqtt():
     def on_message(self, client, userdata, msg):
         # parse the package: 0.0003 s on average
         msg = msg.payload
+        
         network, station, location, channel, nsamp, samprate, starttime, endtime = struct.unpack(f"<2s5s2s3sIddd", msg[0:40])
         network = network.decode().strip()
         station = station.decode().strip()
@@ -206,7 +206,7 @@ class Mqtt():
         self.env_config = manager.dict()
         for k, v in dotenv_values(sys.argv[1]).items():
             self.env_config[k] = v
-            
+
         self.samp_rate = int(self.env_config['SAMP_RATE'])
         self.store_length = int(self.env_config['STORE_LENGTH'])
 
@@ -571,7 +571,7 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
             if local_env["CHECKPOINT_TYPE"] == 'GRADUATE':
                 stft = STFT(toPredict_wave.cpu().numpy()).to(device)
                 toPredict_wave = calc_feats(toPredict_wave)
-
+            
             # predict
             with torch.no_grad():
                 # for conformer
@@ -633,14 +633,13 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
                         pif.write(f"{msg}\n")
                         
                     pif.close()
-                
+
                 # filter the picked station that picked within picktime_gap seconds before
                 original_res, pick_record = check_duplicate_pick(original_res, toPredict_scnl, pick_record, pred_trigger, cur_waveform_starttime, int(local_env["PICK_GAP"]), int(local_env['STORE_LENGTH']), int(local_env['PREDICT_LENGTH']))
 
                 # 檢查 picking time 是否在 2500-th sample 之後
                 original_res, pred_trigger, res = EEW_pick(original_res, pred_trigger, int(local_env['VALID_PICKTIME']))
 
-                # print(pred_trigger)
                 # 區域型 picking
                 if int(local_env['AVOID_FP']) == 1:
                     if local_env['TABLE_OPTION'] == 'nearest':
@@ -655,6 +654,12 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
                     # calculate p_weight
                     P_weight = picking_p_weight_info(out, res, local_env['PWEIGHT_TYPE'], (float(local_env['PWEIGHT0']), float(local_env['PWEIGHT1']),float(local_env['PWEIGHT2'])),
                                                         local_env['CHECKPOINT_TYPE'], toPredict_wave[:, 0].clone(), pred_trigger)
+
+                    # Numbers of Zero-Crossing
+                    zero_cross = ZeroCrossing(res, pred_trigger, toPredict_wave)
+                    
+                    # Check the Pa & numbers of zero-crossing
+                    res = check_Pa_ZeroCross(res, Pa, zero_cross, (float(local_env['THRESHOLD_PA']), int(local_env['THRESHOLD_ZCROSS'])))
 
                     # send pick_msg to PICK_RING
                     pick_msg = gen_pickmsg(station_factor_coords, res, pred_trigger, toPredict_scnl, cur_waveform_starttime, (Pa, Pv, Pd), duration, P_weight, int(local_env['STORE_LENGTH']), int(local_env['PREDICT_LENGTH']))
@@ -781,7 +786,7 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
                     break
 
             # avg: 0.2 s
-            # _ = gc.collect()
+            _ = gc.collect()
         except Exception as e:
             # log the pending 
             # print(e)
