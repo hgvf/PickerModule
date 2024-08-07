@@ -11,6 +11,8 @@ from staticmap import StaticMap, CircleMarker, Polygon, Line
 from scipy import integrate
 from math import sin, cos, sqrt, atan2, radians
 from scipy.signal import find_peaks
+from collections import Counter
+import geopy.distance
 
 # get the station's factor, latitude, lontitude, starttime, and endtime
 def get_StationInfo(nsta_path, starttime):
@@ -865,3 +867,101 @@ def REDPAN_evaluation(picks, p_threshold):
 
     return res, pred_trigger, torch.FloatTensor(out_prob)
     
+def ensemble_picking(station_list, threshold):
+    ensemble_res = Counter(station_list)
+
+    res = []
+    for sta in station_list:
+        if ensemble_res[sta] >= threshold:
+            res.append(True)
+        else:
+            res.append(False)
+
+    return res
+
+def collect_classifier_data(package_list):
+    toPredict = []
+    lat, lon = [], []
+
+    for p in package_list:
+        toPredict.append([float(p['latitude']), float(p['longitude']), int(p['picker_type']), 0.0, 0, int(p['weight']), float(p['pa'])])
+        lon.append(float(p['longitude']))
+        lat.append(float(p['latitude']))
+
+    if len(toPredict) == 1:
+        toPredict[0][3] = 1
+        toPredict[0][4] = 0.0
+    else:
+        close_counts, avg_dis = calc_dis(lon, lat)
+        
+        for i in range(len(toPredict)):
+            toPredict[i][3] = close_counts[i]
+            toPredict[i][4] = avg_dis[i]
+
+    return np.array(toPredict, dtype=object)
+
+
+def calc_dis(lon, lat):
+    coordinates = np.array(list(zip(lat, lon)))
+   
+    dis_res = np.zeros((len(coordinates), len(coordinates)))
+    close_counts = np.zeros(len(coordinates), dtype=int)
+    avg_dis = np.zeros(len(coordinates), dtype=float)
+    
+    for i in range(len(coordinates)):
+        for j in range(i+1, len(coordinates)):
+            distances = geopy.distance.geodesic(coordinates[i], coordinates[j]).km
+            dis_res[i, j] = distances
+            dis_res[j, i] = distances
+    
+    for i in range(len(dis_res)):
+        mask = np.array([False for _ in range(len(dis_res[i]))])
+        mask[dis_res[i] <= 50] = True
+        mask[i] = False
+
+        close_counts[i] = mask.tolist().count(True)
+
+        if close_counts[i] != 0:
+            avg_dis[i] = np.mean(dis_res[i][mask])
+        else:
+            avg_dis[i] = 0
+    
+    return close_counts.tolist(), avg_dis.tolist()
+
+def ZeroCrossing(res, pred_trigger, toPredict_wave):
+    picked_wf = toPredict_wave[res]
+    pred_trigger = np.array(pred_trigger)
+    picked_trigger = pred_trigger[res]
+
+    zero_cross = []
+    print(picked_wf.shape)
+    for i, picked in enumerate(picked_trigger):
+        sign_changes = torch.sign(picked_wf[i, 0, picked:picked+100])
+        zero_crossings = torch.diff(sign_changes)
+        zero_cross.append(torch.sum(zero_crossings != 0).cpu().item())
+
+    return zero_cross
+
+def check_Pa_ZeroCross(res, Pa, zero_cross, thresholds):
+    cnt = 0
+    new_res = []
+    pa_thr, zcross_thr = thresholds
+
+    for r in res:
+        if not r:
+            new_res.append(False)
+        else:
+            if Pa[cnt] < pa_thr:
+                new_res.append(False)
+                cnt += 1
+                continue
+
+            if zero_cross[cnt] < zcross_thr:
+                new_res.append(False)
+                cnt += 1
+                continue
+
+            cnt += 1
+            new_res.append(True)
+
+    return new_res

@@ -6,11 +6,15 @@ WAVE_TOPIC=RSD24bits
 PICK_MSG_TOPIC=PICK24bits
 
 ################ Filepaths of environments  ################
-EQT_ENV=./env/ET_env
+EQT_ENV=./env/EQT_env
 phaseNet_ENV=./env/phaseNet_env
 GRADUATE_ENV=./env/GRADUATE_env
 REDPAN_ENV=./env/REDPAN_env
 STALTA_ENV=./env/STALTA_env
+
+RF_CLASSIFIER_PATH=./checkpoints/RandomForest.joblib
+XGB_CLASSIFIER_PATH=./checkpoints/xgboost.joblib
+DL_CLASSIFIER_PATH=./checkpoints/DL_classifier.pt
 
 ################ Activate the picker(s)  ################
 EQT=1
@@ -19,11 +23,27 @@ GRADUATE=0
 REDPAN=0
 STALTA=1
 
+################ maximum chunks of each picker(s)  ################
+EQT_CHUNK=-1
+EQT_N_STATION=800
+
+phaseNet_CHUNK=-1
+phaseNet_N_STATION=800
+
+GRADUATE_CHUNK=2
+GRADUATE_N_STATION=200
+
+REDPAN_CHUNK=-1
+REDPAN_N_STATION=800
+
+STALTA_CHUNK=-1
+STALTA_N_STATION=800
+
 ################ Device of picker(s)  ################
 EQT_DEVICE=cuda:0
 phaseNet_DEVICE=cuda:0
 GRADUATE_DEVICE=cuda:1
-REDPAN_DEVICE=cuda:0
+REDPAN_DEVICE=cuda:1
 STALTA_DEVICE=cpu
 
 ################ File path ################
@@ -43,10 +63,15 @@ LOCATION='None'
 ################ AvoidFP-related ################
 THRESHOLD_KM=20                        # 搜集測站方圓 x km 內的所有測站代碼
 THRESHOLD_NEIGHBOR=2                   # 如果某個測站方圓 THRESHOLD_KM km 內有 x 個測站也被 picked，則該測站就算真的被 picked
+THRESHOLD_N_PICKER=3
 NEAREST_STATION=5                      # 蒐集最靠近測站的 x 個周圍測站
 TABLE_OPTION='nearest'                 # nearest: 選擇觀察最靠近的幾個測站, km: 選擇距離 x 公里內的幾個測站
-AVOID_FP=1                             # 是否套用避免過多誤報機制 (0/1)
 REPORT_P_WEIGHT=1                             # 規定每次 picking 的絕對時間要比上次晚一秒以上
+TIME_COLLECT=8
+SECOND_ACTIVATE_DECISION_MAKER=1.5
+DECISION_TYPE="ML"                      # neighbor, ML, DL
+DECISION_ML_CLASSIFIER='RandomForest'        # XGBoost, RandomForest
+REPORT_NUM_OF_TRIGGER_DECISION_MAKING=2
 
 ################ System-related ################
 SLEEP_SECOND=10                        # Picker 剛啟動要待機多久
@@ -55,4 +80,4 @@ SECOND_MOVE_BUFFER=5                   # 每過幾秒要將 buffer 往前移動
 MIN_SECOND_ITERATION=0.75              # Picker 限制每個 iteration 至少要執行幾秒\
 DELETE_PICKINGLOG_DAY=90
 DELETE_NOTIFYLOG_DAY=90
-
+DECISION_MAKING_LINE_NOTIFY=1
