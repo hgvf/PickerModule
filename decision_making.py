@@ -222,19 +222,25 @@ def DecisionMaker(env_config, pick_msg, system_time, stationInfo, notify_TF, n_n
             else:
                 toPredict = collect_classifier_data(pick_other)
                 print(toPredict)
+                start = time.time()
                 if local_env['DECISION_TYPE'] == 'ML':
+                    toPredict = np.array(toPredict, dtype=object)
                     res = ML_classifier(model, toPredict)
+
+                    toPublish_package = np.array(pick_other)[res]
                 elif local_env['DECISION_TYPE'] == 'DL':
-                    toPredict = torch.FloatTensor(toPredict).to(device)
-                    out = model(toPredict).detach().cpu.numpy()
+                    toPredict = torch.FloatTensor(toPredict).unsqueeze(0).to(device)
+                    out = model(toPredict).detach()[0].cpu().numpy()
+
                     res = np.empty(out.shape)
                     res[out>=0.5] = True
                     res[out<0.5] = False
 
+                    toPublish_package = np.array(pick_other)[res[:, 0].astype(bool)]
+                print("predict: ", time.time()-start)
             # Publish the result to MQTT broker
             cur = datetime.fromtimestamp(time.time())
             picking_logfile = f"./log/picking/DecisionMaking_{cur.year}-{cur.month}-{cur.day}_picking_chunk.log"
-            toPublish_package = np.array(pick_other)[res]
 
             # writing picking log file
             picked_coord = []

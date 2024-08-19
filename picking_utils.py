@@ -884,7 +884,11 @@ def collect_classifier_data(package_list):
     lat, lon = [], []
 
     for p in package_list:
-        toPredict.append([float(p['latitude']), float(p['longitude']), int(p['picker_type']), 0.0, 0, int(p['weight']), float(p['pa'])])
+        one_hot_picker_type = gen_picker_one_hot(int(p['picker_type']))
+        
+        toPredict.append([float(p['latitude']), float(p['longitude']), 
+        one_hot_picker_type[0], one_hot_picker_type[1], one_hot_picker_type[2], one_hot_picker_type[3], one_hot_picker_type[4],
+        0.0, 0, int(p['weight']), float(p['pa'])])
         lon.append(float(p['longitude']))
         lat.append(float(p['latitude']))
 
@@ -895,11 +899,16 @@ def collect_classifier_data(package_list):
         close_counts, avg_dis = calc_dis(lon, lat)
         
         for i in range(len(toPredict)):
-            toPredict[i][3] = close_counts[i]
-            toPredict[i][4] = avg_dis[i]
+            toPredict[i][-3] = close_counts[i]
+            toPredict[i][-4] = avg_dis[i]
 
-    return np.array(toPredict, dtype=object)
+    return np.array(toPredict)
 
+def gen_picker_one_hot(picker_type):
+    res = [0 for _ in range(5)]
+    res[picker_type] = 1
+
+    return res
 
 def calc_dis(lon, lat):
     coordinates = np.array(list(zip(lat, lon)))
@@ -911,8 +920,13 @@ def calc_dis(lon, lat):
     for i in range(len(coordinates)):
         for j in range(i+1, len(coordinates)):
             distances = geopy.distance.geodesic(coordinates[i], coordinates[j]).km
-            dis_res[i, j] = distances
-            dis_res[j, i] = distances
+
+            if distances == 0.0:
+                dis_res[i, j] = 1000
+                dis_res[j, i] = 1000
+            else:
+                dis_res[i, j] = distances
+                dis_res[j, i] = distances
     
     for i in range(len(dis_res)):
         mask = np.array([False for _ in range(len(dis_res[i]))])
@@ -934,7 +948,6 @@ def ZeroCrossing(res, pred_trigger, toPredict_wave):
     picked_trigger = pred_trigger[res]
 
     zero_cross = []
-    print(picked_wf.shape)
     for i, picked in enumerate(picked_trigger):
         sign_changes = torch.sign(picked_wf[i, 0, picked:picked+100])
         zero_crossings = torch.diff(sign_changes)

@@ -34,7 +34,7 @@ THRESHOLD_PROB=0.6                      # Probability threshold of picker
 THRESHOLD_TRIGGER=40                    # Continuous sample threshold of picker
 ZSCORE=1
 FILTER=1
-THRESHOLD_PA=0.5
+THRESHOLD_PA=0.9
 THRESHOLD_ZCROSS=12
 
 ################ Section5: AvoidFP-related ################

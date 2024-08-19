@@ -42,6 +42,8 @@ import json
 import paho.mqtt.client as mqtt
 from obspy import read
 import struct
+from sklearn.ensemble import RandomForestClassifier
+from xgboost import XGBClassifier
 
 # For RED-PAN
 sys.path.append('./redpan')
@@ -55,43 +57,35 @@ def Manager_Pavd():
     m.start()
     return m 
 
-def station_chunk_per_picker(source, n_prediction_station, stationInfo, channel, location):
+def station_chunk_per_picker(chunk, source, n_prediction_station, stationInfo, channel, location):
     # Slice the chunk depends on the stationInfo
-    source = self.env_config['SOURCE']
-    n_stations = int(self.env_config['N_PREDICTION_STATION'])
+    n_stations = int(n_prediction_station)
     if source == 'Palert':
-        station_chunks = ForPalert_station_selection(self.stationInfo, n_stations)
+        station_chunks = ForPalert_station_selection(stationInfo, n_stations)
     elif source == 'TSMIP':
-        station_chunks = ForTSMIP_station_selection(self.stationInfo)
-    # TODO: CWASN
+        station_chunks = ForTSMIP_station_selection(stationInfo)
 
     # Check the chunk number
-    chunk = self.env_config['CHUNK']
-    end_chunk = None
-    if len(chunk) > 2:
-        start_chunk = int(chunk[0])
-        end_chunk = int(chunk[-1])
+    if chunk == -1:
+        start_chunk = 0
+        end_chunk = 1
     else:
-        start_chunk = int(chunk)
+        start_chunk = chunk
+        end_chunk = start_chunk + 1
 
-        if start_chunk == -1:
-            end_chunk = len(station_chunks)-1
-        else:
-            end_chunk = start_chunk+1
-    
     # Merge the chunk, generating the topic name
     scnl = []
 
     # topic template: source/network/station/location/channel
     # ex. CWASN24Bit/TW/ALS/10/HLZ
-    if self.env_config['CHANNEL'] != 'None':
-        channel_tail = self.env_config['CHANNEL'].split(',')
+    if channel != 'None':
+        channel_tail = channel.split(',')
     else:
         channel_tail = ['Z', 'N', 'E']
 
     location_list = []
-    if self.env_config['LOCATION'] != 'None':
-        location_list = self.env_config['LOCATION'].split(',')
+    if location != 'None':
+        location_list = location.split(',')
 
     for ch in range(start_chunk, end_chunk):
         # station_chunks => station_code: [lontitude, latitude, factor, channel, location]
@@ -183,47 +177,92 @@ class Mqtt_Predictor():
 
         # 連線至 MQTT 伺服器（伺服器位址,連接埠）, timeout=6000s
         self.client.connect(self.env_config['MQTT_SERVER'], int(self.env_config['PORT']), int(self.env_config['TIMEOUT']))
-        print("connect!")
+        print("MQTT predictor connect!")
         
         # 進入無窮處理迴圈
         # self.client.loop_forever()
         self.client.loop_start()
 
-    def activate_single_picker(self, picker):
-        proc = None
-        if int(self.picker[1]) == 1:
-            # device
-            device = torch.device(self.picker[2] if torch.cuda.is_available() else "cpu")  
+    def activate_single_picker(self, env_list):
+        n_proc = []
+
+        if int(env_list[1]) == 1:
+            # 計算共有多少 chunks
+            n_chunks = 1 if len(self.stationInfo) <= int(env_list[5]) else len(self.stationInfo) // int(env_list[5]) + 1
+            # print(len(self.stationInfo), n_chunks)
             
+            # device
+            device_list = env_list[2].split(',')
+
             # taking shared env params as local params
             local_env = {}
             for k, v in self.env_config.items():
                 local_env[k] = v
-
+        
             # updating local params with seperate env file of each picker
-            for k, v in dotenv_values(self.picker[0]).items():
+            for k, v in dotenv_values(env_list[0]).items():
                 local_env[k] = v
 
-            picker = Process(target=Picker, args=(self.waveform_buffer, self.key_index, self.nowtime, self.waveform_buffer_start_time, local_env, self.key_cnt, self.stationInfo, device,
-                                                (self.notify_tokens, self.waveform_tokens), self.pavd_sta))
-                
-            return proc
+            end_chunk = None
+            if len(env_list[3]) > 2:
+                start_chunk = int(env_list[3][0])
+                end_chunk = int(env_list[3][-1]) + 1
+            else:
+                start_chunk = int(env_list[3])
+
+                if start_chunk == -1:
+                    end_chunk = -1
+                else:
+                    end_chunk = start_chunk+1
+
+            # 預測全部的測站， processes (depend on n_chunks)
+            if (start_chunk == end_chunk):
+                if(n_chunks == 1):
+                    assert (len(device_list) >= 1), "Numbers of device should be equal to 1 !"
+                    device = torch.device(device_list[0] if torch.cuda.is_available() else "cpu") 
+                    n_proc.append(Process(target=Picker, args=(self.waveform_buffer, self.key_index, self.nowtime, self.waveform_buffer_start_time, local_env, self.key_cnt, self.stationInfo, device,
+                                                     (self.notify_tokens, self.waveform_tokens), self.pavd_sta, int(env_list[3]), env_list[4], int(env_list[5]))))
+                else:
+                    assert (len(device_list) == n_chunks), "Numbers of device should be equal to numbers of chunk !"
+                    for i in range(n_chunks):
+                        device = torch.device(device_list[i] if torch.cuda.is_available() else "cpu") 
+                        n_proc.append(Process(target=Picker, args=(self.waveform_buffer, self.key_index, self.nowtime, self.waveform_buffer_start_time, local_env, self.key_cnt, self.stationInfo, device,
+                                                     (self.notify_tokens, self.waveform_tokens), self.pavd_sta, i, env_list[4], int(env_list[5]))))
+            # 只 predict 特定 chunk 的測站
+            else:
+                assert (start_chunk <= n_chunks-1), "start chunk out of range !"
+                assert (end_chunk <= n_chunks), "end chunk out of range !"
+
+                for i in range(start_chunk, end_chunk):
+                    assert (len(device_list) == end_chunk-start_chunk), "Numbers of device is not sufficient !"
+                    device = torch.device(device_list[i-start_chunk] if torch.cuda.is_available() else "cpu") 
+                    n_proc.append(Process(target=Picker, args=(self.waveform_buffer, self.key_index, self.nowtime, self.waveform_buffer_start_time, local_env, self.key_cnt, self.stationInfo, device,
+                                                     (self.notify_tokens, self.waveform_tokens), self.pavd_sta, i, env_list[4], int(env_list[5]))))
+
+        return n_proc
 
     def start(self):
         try:
             time_mover = Process(target=TimeMover, args=(self.waveform_buffer, self.env_config, self.nowtime, self.waveform_buffer_start_time))
             time_mover.start()
 
-            pavd_sender = Process(target=PavdModule_sender, args=(self.env_config['CHECKPOINT_TYPE'], int(self.env_config['SAMP_RATE']), self.pavd_calc, self.waveform_comein, self.waveform_comein_length, self.pavd_scnl, self.waveform_scnl))
+            pavd_sender = Process(target=PavdModule_sender, args=('DecisionMaking', int(self.env_config['SAMP_RATE']), self.pavd_calc, self.waveform_comein, self.waveform_comein_length, self.pavd_scnl, self.waveform_scnl))
             pavd_sender.start()
 
             picker = []
             for e in [self.eqt_env, self.phasenet_env, self.graduate_env, self.redpan_env, self.stalta_env]:
-                cur_picker = self.activate_single_picker(e)
+                try:
+                    cur_picker = self.activate_single_picker(e)
 
-                if cur_picker is not None:
-                    cur_picker.start()
-                    picker.append(cur_picker)
+                    if len(cur_picker) == 0:
+                        continue
+                    else:
+                        for cur_p in cur_picker:
+                            cur_p.start()
+                            picker.append(cur_p)
+                except Exception as e:
+                    print("exception during picker activating: ", e)
+                    continue
 
             pavd_processes = []
             for i in range(int(self.env_config['N_PAVD_PROCESS'])):
@@ -263,11 +302,11 @@ class Mqtt_Predictor():
         for k, v in dotenv_values(sys.argv[1]).items():
             self.env_config[k] = v
             
-        self.eqt_env = [self.env_config['EQT_ENV'], self.env_config['EQT'], self.env_config['EQT_DEVICE']]
-        self.phasenet_env = [self.env_config['phaseNet_ENV'], self.env_config['phaseNet'], self.env_config['phaseNet_DEVICE']]
-        self.graduate_env = [self.env_config['GRADUATE_ENV'], self.env_config['GRADUATE'], self.env_config['GRADUATE_DEVICE']]
-        self.redpan_env = [self.env_config['REDPAN_ENV'], self.env_config['REDPAN'], self.env_config['REDPAN_DEVICE']]
-        self.stalta_env = [self.env_config['STALTA_ENV'], self.env_config['STALTA'], self.env_config['STALTA_DEVICE']]
+        self.eqt_env = [self.env_config['EQT_ENV'], self.env_config['EQT'], self.env_config['EQT_DEVICE'], self.env_config['EQT_CHUNK'], 2, self.env_config['EQT_N_STATION']]
+        self.phasenet_env = [self.env_config['phaseNet_ENV'], self.env_config['phaseNet'], self.env_config['phaseNet_DEVICE'], self.env_config['phaseNet_CHUNK'], 3, self.env_config['phaseNet_N_STATION']]
+        self.graduate_env = [self.env_config['GRADUATE_ENV'], self.env_config['GRADUATE'], self.env_config['GRADUATE_DEVICE'], self.env_config['GRADUATE_CHUNK'], 4, self.env_config['GRADUATE_N_STATION']]
+        self.redpan_env = [self.env_config['REDPAN_ENV'], self.env_config['REDPAN'], self.env_config['REDPAN_DEVICE'], self.env_config['REDPAN_CHUNK'], 0, self.env_config['REDPAN_N_STATION']]
+        self.stalta_env = [self.env_config['STALTA_ENV'], self.env_config['STALTA'], self.env_config['STALTA_DEVICE'], self.env_config['STALTA_CHUNK'], 1, self.env_config['STALTA_N_STATION']]
 
         self.samp_rate = int(self.env_config['SAMP_RATE'])
         self.store_length = int(self.env_config['STORE_LENGTH'])
@@ -391,7 +430,7 @@ def TimeMover(waveform_buffer, env_config, nowtime, waveform_buffer_start_time):
         except Exception as e:
             # log the pending 
             cur = datetime.fromtimestamp(time.time())
-            picking_logfile = f"./log/exception/{local_env['CHECKPOINT_TYPE']}_{cur.year}-{cur.month}-{cur.day}.log"
+            picking_logfile = f"./log/exception/DecisionMaking_{cur.year}-{cur.month}-{cur.day}.log"
             with open(picking_logfile,"a") as pif:
                 pif.write('='*25)
                 pif.write('\n')
@@ -405,19 +444,21 @@ def TimeMover(waveform_buffer, env_config, nowtime, waveform_buffer_start_time):
             continue
 
 # picking: pick and send pick_msg to PICK_RING
-def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_config, key_cnt, stationInfo, device,
-            tokens, pavd_sta):
+def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, local_env, key_cnt, stationInfo, device,
+            tokens, pavd_sta, chunk, picker_type, n_predict_station):
 
-    print('Starting Picker...')
+    print('Starting Picker...', picker_type)
 
-    scnl_in_chunk = station_chunk_per_picker(local_env['SOURCE'], local_env['N_PREDICTION_STATION'], stationInfo, local_env['CHANNEL'], local_env['LOCATION'])
+    scnl_in_chunk = station_chunk_per_picker(chunk, local_env['SOURCE'], n_predict_station, stationInfo, local_env['CHANNEL'], local_env['LOCATION'])
 
     # mqtt server for publishing pick_msg
     client = mqtt.Client()
-    client.connect(env_config['MQTT_SERVER'], int(env_config['PORT']), int(env_config['TIMEOUT']))
+    client.connect(local_env['MQTT_SERVER'], int(local_env['PORT']), int(local_env['TIMEOUT']))
 
     # loading pretrained picker
-    model_path = local_env["PICKER_CHECKPOINT_PATH"]
+    if picker_type != 1:
+        model_path = local_env["PICKER_CHECKPOINT_PATH"]
+
     if local_env["CHECKPOINT_TYPE"] == 'GRADUATE':
         in_feat = 12
         model = GRADUATE(conformer_class=8, d_ffn=128, nhead=4, enc_layers=2, dec_layers=1, d_model=12, wavelength=int(local_env['PREDICT_LENGTH'])).to(device)
@@ -617,11 +658,12 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
 
                     # Picks, _ = model.predict(toPredict_wave.permute(0,2,1).cpu().numpy())
                     original_res, pred_trigger, out = REDPAN_evaluation(Picks.numpy(), float(local_env["THRESHOLD_PROB"]))
-     
+            
             # select the p-arrival time         
             if local_env['CHECKPOINT_TYPE'] not in ['STALTA', 'REDPAN']:
                 original_res, pred_trigger = evaluation(out, float(local_env["THRESHOLD_PROB"]), int(local_env["THRESHOLD_TRIGGER"]), local_env["THRESHOLD_TYPE"])
 
+            # print(original_res.count(True))
             # 寫 original res 的 log 檔
             if np.any(original_res):   
                 # calculate Pa, Pv, Pd
@@ -640,49 +682,6 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
                 # 檢查 picking time 是否在 2500-th sample 之後
                 original_res, pred_trigger, res = EEW_pick(original_res, pred_trigger, int(local_env['VALID_PICKTIME']))
 
-                # get the filenames
-                cur = datetime.fromtimestamp(time.time())
-                original_picking_logfile = f"./log/original_picking/{local_env['CHECKPOINT_TYPE']}_{cur.year}-{cur.month}-{cur.day}_original_picking_chunk{local_env['CHUNK']}.log"
-
-                print('Original pick: ', original_res.count(True))
-                # writing original picking log file
-                with open(original_picking_logfile,"a") as pif:
-                    cur_time = datetime.utcfromtimestamp(time.time())
-                    pif.write('='*25)
-                    pif.write(f"Report time: {cur_time.strftime('%Y-%m-%d %H:%M:%S.%f')}")
-                    pif.write('='*25)
-                    pif.write('\n')
-                    for msg in original_pick_msg:
-                        # print(msg)
-                        tmp = msg.split(' ')
-                        pif.write(" ".join(tmp[:6]))
-
-                        pick_time = datetime.utcfromtimestamp(float(tmp[-4]))
-                        # print('pick_time: ', pick_time)
-                        pif.write(f",\tp arrival time-> {pick_time.strftime('%Y-%m-%d %H:%M:%S.%f')}\n")
-                        pif.write(f"{msg}\n")
-
-                        # publish to mqtt (pick_msg)
-                        message = {
-                            "station" : tmp[0],
-                            "channel" : tmp[1],
-                            "network" : tmp[2],
-                            "location" : tmp[3],
-                            "longitude" : tmp[4],
-                            "latitude" : tmp[5],
-                            "pa" : tmp[6],
-                            "pv" : tmp[7],
-                            "pd" : tmp[8],
-                            "tc" : tmp[9],
-                            "ptime" : tmp[10],
-                            "weight" : tmp[11],
-                            "instrument" : tmp[12],
-                            "upd_sec" : tmp[13],
-                        }
-                        client.publish(f"{local_env['PICK_MSG_TOPIC']}/{local_env['CHECKPOINT_TYPE']}", json.dumps(message))
-
-                    pif.close()
-                
                 if np.any(res):
                     # calculate Pa, Pv, Pd
                     Pa, Pv, Pd, duration = picking_append_info(pavd_sta, toPredict_scnl, res, pred_trigger, int(local_env['PREDICT_LENGTH']), clear=True)
@@ -690,6 +689,12 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
                     # calculate p_weight
                     P_weight = picking_p_weight_info(out, res, local_env['PWEIGHT_TYPE'], (float(local_env['PWEIGHT0']), float(local_env['PWEIGHT1']),float(local_env['PWEIGHT2'])),
                                                         local_env['CHECKPOINT_TYPE'], toPredict_wave[:, 0].clone(), pred_trigger)
+
+                    # Numbers of Zero-Crossing
+                    zero_cross = ZeroCrossing(res, pred_trigger, toPredict_wave)
+
+                    # Check the Pa & numbers of zero-crossing
+                    res = check_Pa_ZeroCross(res, Pa, zero_cross, (float(local_env['THRESHOLD_PA']), int(local_env['THRESHOLD_ZCROSS'])))
 
                     # send pick_msg to PICK_RING
                     pick_msg = gen_pickmsg(station_factor_coords, res, pred_trigger, toPredict_scnl, cur_waveform_starttime, (Pa, Pv, Pd), duration, P_weight, int(local_env['STORE_LENGTH']), int(local_env['PREDICT_LENGTH']))
@@ -700,7 +705,6 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
 
                     # writing picking log file
                     picked_coord = []
-                    notify_msg = []
                     with open(picking_logfile,"a") as pif:
                         cur_time = datetime.utcfromtimestamp(time.time())
                         pif.write('='*25)
@@ -715,6 +719,7 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
                             p_weight = int(tmp[-3])
 
                             if p_weight <= int(local_env['REPORT_P_WEIGHT']):
+                                picked_coord.append(msg)
                                 pif.write(" ".join(tmp[:6]))
 
                                 pick_time = datetime.utcfromtimestamp(float(tmp[-4]))
@@ -738,6 +743,7 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
                                     "weight" : tmp[11],
                                     "instrument" : tmp[12],
                                     "upd_sec" : tmp[13],
+                                    "picker_type": picker_type,
                                 }
                                 client.publish(f"{local_env['PICK_MSG_TOPIC']}/{local_env['CHECKPOINT_TYPE']}", json.dumps(message))
                                 
@@ -745,14 +751,15 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
 
                     # plotting the station on the map and send info to Line notify
                     cur_time = datetime.utcfromtimestamp(time.time())
-                    print(f"{len(picked_coord)} stations are picked! <- {cur_time.strftime('%Y-%m-%d %H:%M:%S.%f')}")
+                    # print(f"({picker_type}), {len(picked_coord)} stations are picked! <- {cur_time.strftime('%Y-%m-%d %H:%M:%S.%f')}")
                         
                 else:
                     # plotting the station on the map and send info to Line notify
                     cur_time = datetime.utcfromtimestamp(time.time())
-                    print(f"0 stations are picked! <- {cur_time.strftime('%Y-%m-%d %H:%M:%S.%f')}")
+                    # print(f"({picker_type}), 0 stations are picked! <- {cur_time.strftime('%Y-%m-%d %H:%M:%S.%f')}")
             else:
-                print(f"(else)0 stations are picked! <- {cur}")  
+                # print(f"(else) ({picker_type}), 0 stations are picked! <- {cur}")  
+                pass
 
             prev_key_index = cur_key_index
 
@@ -768,7 +775,7 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
             # log the pending 
             # print(e)
             cur = datetime.fromtimestamp(time.time())
-            picking_logfile = f"./log/exception/{local_env['CHECKPOINT_TYPE']}_{cur.year}-{cur.month}-{cur.day}.log"
+            picking_logfile = f"./log/exception/DecisionMaking_{cur.year}-{cur.month}-{cur.day}.log"
             with open(picking_logfile,"a") as pif:
                 pif.write('='*25)
                 pif.write('\n')
@@ -885,193 +892,6 @@ def PavdModule_sender(CHECKPOINT_TYPE, SAMP_RATE, pavd_calc, waveform_comein, wa
                 pif.write('\n')
                 pif.close()
             pass
-
-class MQTT_DecisionMaking():
-    def __init__(self,):
-        self.activate_mqtt()
-
-        self.env_config = {}
-        for k, v in dotenv_values(sys.argv[1]).items():
-            self.env_config[k] = v
-
-        DecisionMaker = Process(target=DecisionMaking, args=(self.env_config, self.pick_msg, self.system_time, self.stationInfo,
-                                                            self.notify_TF, self.n_notify, self.toNotify_pickedCoord))
-        DecisionMaker.start()
-
-        notifier = Process(target=Notifier, args=(self.notify_TF, self.toNotify_pickedCoord, self.notify_tokens, self.n_notify,))
-
-        DecisionMaker.join()
-
-    def on_connect(self, client, userdata, flags, rc):
-        if rc == 0:
-            print("Connected with result code " + str(rc))
-    
-            client.subscribe(f"{self.env_config['PICK_MSG_TOPIC']}/#")
-
-            cur = datetime.fromtimestamp(time.time())
-            with open(f"./log/mqtt/{cur.year}_{cur.month}_{cur.day}.log", 'a') as f:
-                f.write(f"MQTT connected at {cur.hour}:{cur.minute}:{cur.second}\n")
-                f.write('='*25)
-                f.write('\n')
-        else:
-            print("Failed to connect, ", rc)
-            client.disconnect()
-
-    def on_message(self, client, userdata, msg):
-        # parse the package: 0.0003 s on average
-        msg = str(msg.payload.decode("utf-8"))
-        msg = json.loads(msg)
-
-        cur = time.time()
-        # append to list for neighbor picking
-        if cur - msg['ptime'] <= 5:
-            self.pick_msg.put(msg)
-            self.system_time = time.time()
-        
-    def on_disconnect(self, client, userdata, rc):
-        if rc != 0:
-            print("Unexpected disconnection: ", str(rc))
-            # Optionally, add reconnection logic here
-            client.reconnect()
-
-            cur = datetime.fromtimestamp(time.time())
-            with open(f"./log/mqtt/{cur.year}_{cur.month}_{cur.day}.log", 'a') as f:
-                f.write(f"MQTT disconnected at {cur.hour}:{cur.minute}:{cur.second}\n")
-                f.write('='*25)
-                f.write('\n')
-
-    def activate_mqtt(self):
-        # 建立 MQTT Client 物件
-        self.client = mqtt.Client()
-        # 設定建立連線回呼函數 (callback function)
-        self.client.on_connect = self.on_connect
-
-        # callback functions
-        self.client.on_message = self.on_message
-        self.client.on_disconnect = self.on_disconnect    
-
-        # 連線至 MQTT 伺服器（伺服器位址,連接埠）, timeout=6000s
-        self.client.connect(self.env_config['MQTT_SERVER'], int(self.env_config['PORT']), int(self.env_config['TIMEOUT']))
-        print("connect!")
-        
-        # 進入無窮處理迴圈
-        # self.client.loop_forever()
-        self.client.loop_start()
-
-    def init_shared_params(self):
-        manager = Manager()
-        self.pick_msg = manager.Queue()
-        self.system_time = Value('d', int(time.time()))
-
-        # get the station's info
-        if self.env_config['SOURCE'] == 'Palert':
-            self.stationInfo = get_PalertStationInfo(self.env_config['STATION_FILEPATH'])
-        elif self.env_config['SOURCE'] == 'CWASN':
-            self.stationInfo = get_CWBStationInfo(self.env_config['STATION_FILEPATH'])
-        elif self.env_config['SOURCE'] == 'TSMIP':
-            self.stationInfo = get_TSMIPStationInfo(self.env_config['STATION_FILEPATH'])
-        else:
-            self.stationInfo = get_StationInfo(self.env_config['STATION_FILEPATH'], (datetime.utcfromtimestamp(time.time()) + timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S.%f'))
-
-        # parameters for notifier
-        self.notify_TF = Value('d', int(0))
-        self.toNotify_pickedCoord = manager.dict()
-        self.n_notify = Value('d', int(0))
-        # get the candidate line notify tokens
-        self.notify_tokens, _ = load_tokens(self.env_config['NOTIFY_TOKENS'], self.env_config['WAVEFORM_TOKENS'])
-
-def DecisionMaker(env_config, pick_msg, system_time, stationInfo, notify_TF, n_notify, toNotify_pickedCoord):
-    print("Starting Decision Maker")
-
-    # localize the env_config dictionary
-    local_env = {}
-    for k, v in env_config.items():
-        local_env[k] = v
-
-    # Table for neighbor picking
-    _, neighbor_table = station_selection(sel_chunk=local_env["CHUNK"], station_list=stationInfo, opt=local_env['SOURCE'], build_table=True, n_stations=int(local_env["N_PREDICTION_STATION"]), threshold_km=float(local_env['THRESHOLD_KM']),
-                                            nearest_station=int(local_env['NEAREST_STATION']), option=local_env['TABLE_OPTION'])
-
-    # mqtt server for publishing pick_msg
-    client = mqtt.Client()
-    client.connect(env_config['MQTT_SERVER'], int(env_config['PORT']), int(env_config['TIMEOUT']))
-
-    while True:
-        try:
-            cur_time = time.time()
-            if cur_time - system_time >= 0.1 and pick_msg.qsize() > 0:
-                # Localize & clear the pick_msg list
-                pick_sta = []
-                pick_other = []
-                while pick_msg.qsize() >= 1:
-                    package = pick_msg.get()
-
-                    if int(package['weight']) <= int(local_env['REPORT_P_WEIGHT']):
-                        pick_sta.append(package['station'])
-                        pick_other.append(package)
-
-                # Neighbor picking
-                if int(local_env['AVOID_FP']) == 1:
-                    res = [True for _ in range(len(pick_sta))]
-                    res = neighbor_picking(neighbor_table, pick_sta, res, res, int(local_env['THRESHOLD_NEIGHBOR']))   # 用鄰近測站來 pick
-                    
-                # Publish the result to MQTT broker
-                cur = datetime.fromtimestamp(time.time())
-                picking_logfile = f"./log/picking/DecisionMaking_{cur.year}-{cur.month}-{cur.day}_picking_chunk.log"
-                toPublish_package = np.array(pick_other)[res]
-
-                # writing picking log file
-                picked_coord = []
-                with open(picking_logfile,"a") as pif:
-                    cur_time = datetime.utcfromtimestamp(time.time())
-                    pif.write('='*25)
-                    pif.write(f"Report time: {cur_time.strftime('%Y-%m-%d %H:%M:%S.%f')}")
-                    pif.write('='*25)
-                    pif.write('\n')
-
-                    for package in toPublish_package:
-                        pick_time = datetime.utcfromtimestamp(float(package['ptime']))
-                        pif.write(f"{package['station']}_{package['channel']}_{package['network']}_{package['location']},\tp arrival time-> {pick_time.strftime('%Y-%m-%d %H:%M:%S.%f')}\n")
-                        pif.write(f"{package['station']}\t{package['channel']}\t{package['network']}\t{package['location']}\t")
-                        pif.write(f"{package['longitude']}\t{package['latitude']}\t")
-                        pif.write(f"{package['pa']}\t{package['pv']}\t{package['pd']}\t{package['tc']}\t")
-                        pif.write(f"{package['ptime']}\t{package['weight']}\t{package['instrument']}\t{package['upd_sec']}\n")
-                        
-                        picked_coord.append((float(package['longitude']), float(package['latitude'])))
-
-                        client.publish(f"{local_env['PICK_MSG_TOPIC']}/", json.dumps(package))
-                
-                    pif.close()
-
-                 # plotting the station on the map and send info to Line notify
-                cur_time = datetime.utcfromtimestamp(time.time())
-                print(f"{len(picked_coord)} stations are picked! <- {cur_time.strftime('%Y-%m-%d %H:%M:%S.%f')}")
-
-                # send signal for Notifier to send Line notify
-                if len(picked_coord) >= int(local_env["REPORT_NUM_OF_TRIGGER"]) and int(local_env['LINE_NOTIFY']) == 1:
-                    n_notify.value *= 0
-                    n_notify.value += len(picked_coord)
-                    notify_TF.value += 1
-                    for picked_idx in range(len(picked_coord)):
-                        toNotify_pickedCoord[picked_idx] = picked_coord[picked_idx]
-
-            else:
-                continue
-
-        except Exception as e:
-            # log the pending 
-            cur = datetime.fromtimestamp(time.time())
-            picking_logfile = f"./log/exception/DecisionMaking_{cur.year}-{cur.month}-{cur.day}.log"
-            with open(picking_logfile,"a") as pif:
-                pif.write('='*25)
-                pif.write('\n')
-                pif.write(f"Time -> {cur.strftime('%Y-%m-%d %H:%M:%S.%f')}\n")
-                pif.write(f"Error message (DecisionMaker): {e}\n")
-                pif.write(f"Trace back (DecisionMaker): {traceback.format_exc()}\n")
-                pif.write('='*25)
-                pif.write('\n')
-                pif.close()
-            continue
 
 # notifing 
 def Notifier(notify_TF, toNotify_pickedCoord, line_tokens, n_notify):

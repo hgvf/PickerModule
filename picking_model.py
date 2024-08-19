@@ -341,7 +341,7 @@ class Ensemble(nn.Module):
         if pos_emb:
             self.pos_emb = PositionEmbedding(emb_dim, min_lat, max_lat, min_lon, max_lon)
 
-        prenorm_dim = emb_dim+6 if pos_emb else 8
+        prenorm_dim = emb_dim+6 if pos_emb else 11
         self.pre_norm_coord_attn = nn.Sequential(nn.Linear(prenorm_dim, d_ffn),
                         nn.ReLU(),
                         nn.LayerNorm(d_ffn),)
