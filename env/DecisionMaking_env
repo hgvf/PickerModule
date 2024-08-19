@@ -14,14 +14,14 @@ STALTA_ENV=./env/STALTA_env
 
 RF_CLASSIFIER_PATH=./checkpoints/RandomForest.joblib
 XGB_CLASSIFIER_PATH=./checkpoints/xgboost.joblib
-DL_CLASSIFIER_PATH=./checkpoints/DL_classifier.pt
+DL_CLASSIFIER_PATH=./checkpoints/whole_data_masked.pt
 
 ################ Activate the picker(s)  ################
-EQT=1
-phaseNet=1
-GRADUATE=0
-REDPAN=0
-STALTA=1
+EQT=1               # picker_type == 2
+phaseNet=1          # picker_type == 3
+GRADUATE=1          # picker_type == 4
+REDPAN=0            # picker_type == 0
+STALTA=1            # picker_type == 1
 
 ################ maximum chunks of each picker(s)  ################
 EQT_CHUNK=-1
@@ -30,21 +30,21 @@ EQT_N_STATION=800
 phaseNet_CHUNK=-1
 phaseNet_N_STATION=800
 
-GRADUATE_CHUNK=2
+GRADUATE_CHUNK=1-3
 GRADUATE_N_STATION=200
 
-REDPAN_CHUNK=-1
-REDPAN_N_STATION=800
+REDPAN_CHUNK=2 
+REDPAN_N_STATION=50
 
 STALTA_CHUNK=-1
 STALTA_N_STATION=800
 
 ################ Device of picker(s)  ################
-EQT_DEVICE=cuda:0
-phaseNet_DEVICE=cuda:0
-GRADUATE_DEVICE=cuda:1
-REDPAN_DEVICE=cuda:1
-STALTA_DEVICE=cpu
+EQT_DEVICE='cuda:0'
+phaseNet_DEVICE='cuda:0'
+GRADUATE_DEVICE='cuda:2,cuda:1,cuda:0'
+REDPAN_DEVICE='cuda:0'
+STALTA_DEVICE='cpu'
 
 ################ File path ################
 NOTIFY_TOKENS=./nsta/waveform_tokens.txt
@@ -68,10 +68,10 @@ NEAREST_STATION=5                      # 蒐集最靠近測站的 x 個周圍測
 TABLE_OPTION='nearest'                 # nearest: 選擇觀察最靠近的幾個測站, km: 選擇距離 x 公里內的幾個測站
 REPORT_P_WEIGHT=1                             # 規定每次 picking 的絕對時間要比上次晚一秒以上
 TIME_COLLECT=8
-SECOND_ACTIVATE_DECISION_MAKER=1.5
+SECOND_ACTIVATE_DECISION_MAKER=0.6
 DECISION_TYPE="ML"                      # neighbor, ML, DL
-DECISION_ML_CLASSIFIER='RandomForest'        # XGBoost, RandomForest
-REPORT_NUM_OF_TRIGGER_DECISION_MAKING=2
+DECISION_ML_CLASSIFIER='XGBoost'        # XGBoost, RandomForest
+REPORT_NUM_OF_TRIGGER_DECISION_MAKING=3
 
 ################ System-related ################
 SLEEP_SECOND=10                        # Picker 剛啟動要待機多久

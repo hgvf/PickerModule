@@ -37,8 +37,8 @@ LONG_WINDOW=500
 THRESHOLD_LAMBDA=14
 ZSCORE=0
 FILTER=1
-THRESHOLD_PA=0.5
-THRESHOLD_ZCROSS=12
+THRESHOLD_PA=0.9
+THRESHOLD_ZCROSS=13
 
 ################ Section5: AvoidFP-related ################
 THRESHOLD_KM=20                        # 搜集測站方圓 x km 內的所有測站代碼
