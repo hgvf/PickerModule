@@ -30,11 +30,11 @@ LOCATION='None'
 ################ Section4: Picker-related ################
 CHECKPOINT_TYPE='phaseNet'                   # Model opt of picker
 THRESHOLD_TYPE="max"                    # Picking criteria of picker
-THRESHOLD_PROB=0.5                      # Probability threshold of picker
+THRESHOLD_PROB=0.6                      # Probability threshold of picker
 THRESHOLD_TRIGGER=40                    # Continuous sample threshold of picker
 ZSCORE=1
 FILTER=0
-THRESHOLD_PA=0.9
+THRESHOLD_PA=1.5
 THRESHOLD_ZCROSS=13
 
 ################ Section5: AvoidFP-related ################
@@ -53,9 +53,9 @@ LINE_NOTIFY=1                          # Line notify ? (0 or 1)
 PLOT_WAVEFORM=1                        # Line notify 時是否順便將測站波形畫出
 
 ################ Section 7: P's weight-related ################
-PWEIGHT0=0.7                          
+PWEIGHT0=0.7                         
 PWEIGHT1=0.6  
-PWEIGHT2=0.55    
+PWEIGHT2=0.5    
 PWEIGHT_TYPE='prob'                    # 決定 p_weight 的方式: prob (probability of picker) or snr
 
 ################ Section 8: System-related ################

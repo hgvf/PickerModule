@@ -879,30 +879,50 @@ def ensemble_picking(station_list, threshold):
 
     return res
 
-def collect_classifier_data(package_list):
+def collect_classifier_data(package_list, km_threshold):
     toPredict = []
     lat, lon = [], []
+    package = []
+    toDelete = []
+    record = []
 
-    for p in package_list:
-        one_hot_picker_type = gen_picker_one_hot(int(p['picker_type']))
-        
-        toPredict.append([float(p['latitude']), float(p['longitude']), 
-        one_hot_picker_type[0], one_hot_picker_type[1], one_hot_picker_type[2], one_hot_picker_type[3], one_hot_picker_type[4],
-        0.0, 0, int(p['weight']), float(p['pa'])])
-        lon.append(float(p['longitude']))
-        lat.append(float(p['latitude']))
+    # print("before:")
+    # print(package_list)
+    for k, v in package_list.items():
+        if time.time() - v[0] >= 3:
+            toDelete.append(k)
+            continue
+        else:
+            if k in record:
+                continue
+            
+            record.append(k)
+            p = v[1]
+            package.append(p)
+
+            one_hot_picker_type = gen_picker_one_hot(int(p['picker_type']))
+            
+            toPredict.append([one_hot_picker_type[0], one_hot_picker_type[1], one_hot_picker_type[2], one_hot_picker_type[3], one_hot_picker_type[4],
+            0.0, 0, int(p['weight']), float(p['pa'])])
+            lon.append(float(p['longitude']))
+            lat.append(float(p['latitude']))
 
     if len(toPredict) == 1:
         toPredict[0][3] = 1
         toPredict[0][4] = 0.0
     else:
-        close_counts, avg_dis = calc_dis(lon, lat)
+        close_counts, avg_dis = calc_dis(lon, lat, km_threshold)
         
         for i in range(len(toPredict)):
             toPredict[i][-3] = close_counts[i]
             toPredict[i][-4] = avg_dis[i]
 
-    return np.array(toPredict)
+    # delete 
+    for t in toDelete:
+        del package_list[t]
+    # print("after:")
+    # print(package_list)
+    return np.array(toPredict), package
 
 def gen_picker_one_hot(picker_type):
     res = [0 for _ in range(5)]
@@ -910,7 +930,7 @@ def gen_picker_one_hot(picker_type):
 
     return res
 
-def calc_dis(lon, lat):
+def calc_dis(lon, lat, km_threshold):
     coordinates = np.array(list(zip(lat, lon)))
    
     dis_res = np.zeros((len(coordinates), len(coordinates)))
@@ -930,7 +950,7 @@ def calc_dis(lon, lat):
     
     for i in range(len(dis_res)):
         mask = np.array([False for _ in range(len(dis_res[i]))])
-        mask[dis_res[i] <= 50] = True
+        mask[dis_res[i] <= km_threshold] = True
         mask[i] = False
 
         close_counts[i] = mask.tolist().count(True)
@@ -959,7 +979,7 @@ def check_Pa_ZeroCross(res, Pa, zero_cross, thresholds):
     cnt = 0
     new_res = []
     pa_thr, zcross_thr = thresholds
-
+    
     for r in res:
         if not r:
             new_res.append(False)

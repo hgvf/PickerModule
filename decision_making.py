@@ -189,39 +189,37 @@ def DecisionMaker(env_config, pick_msg, system_time, stationInfo, notify_TF, n_n
     client = mqtt.Client()
     client.connect(env_config['MQTT_SERVER'], int(env_config['PORT']), int(env_config['TIMEOUT']))
 
+    nearest_3times_package = {}
+    reset_record_time = time.time()
     while True:
         try:
             if pick_msg.qsize() == 0:
                 continue
 
             pick_sta = []
-            pick_other = []
             
             start_parsing_package = time.time()
+            start = time.time()
             while time.time()-start_parsing_package < float(local_env['SECOND_ACTIVATE_DECISION_MAKER']):
                 while pick_msg.qsize() >= 1:
                     package = pick_msg.get()
                     
                     if int(package['weight']) <= int(local_env['REPORT_P_WEIGHT']):
-                        pick_sta.append(package['station'])
-                        pick_other.append(package)
+                        scnl = f"{package['station']}_{package['channel']}_{package['network']}_{package['location']}"
+                        pick_sta.append(scnl)
+                        
+                        nearest_3times_package[scnl] = [time.time(), package]
                         start_parsing_package = time.time()
             
+            toPredict, pick_other = collect_classifier_data(nearest_3times_package, float(local_env['THRESHOLD_KM']))
+            print(toPredict)
+
             print('pick_sta: ', pick_sta)
             # Neighbor picking
             if local_env['DECISION_TYPE'] == 'neighbor':
-                original_res = [True for _ in range(len(pick_sta))]
-                nei_res = neighbor_picking(neighbor_table, pick_sta, original_res, original_res, int(local_env['THRESHOLD_NEIGHBOR']))   # 用鄰近測站來 pick
-                    
-                # Ensemble
-                en_res = ensemble_picking(pick_sta, int(local_env['THRESHOLD_N_PICKER']))
-
-                # Merging the results from neighbor & ensemble picking
-                res = np.logical_or(nei_res, en_res)
-
+                res = toPredict[:, -3] >= int(local_env['THRESHOLD_NEIGHBOR'])
+                toPublish_package = np.array(pick_other)[res]
             else:
-                toPredict = collect_classifier_data(pick_other)
-                print(toPredict)
                 start = time.time()
                 if local_env['DECISION_TYPE'] == 'ML':
                     toPredict = np.array(toPredict, dtype=object)
@@ -237,14 +235,18 @@ def DecisionMaker(env_config, pick_msg, system_time, stationInfo, notify_TF, n_n
                     res[out<0.5] = False
 
                     toPublish_package = np.array(pick_other)[res[:, 0].astype(bool)]
-                print("predict: ", time.time()-start)
+
             # Publish the result to MQTT broker
             cur = datetime.fromtimestamp(time.time())
             picking_logfile = f"./log/picking/DecisionMaking_{cur.year}-{cur.month}-{cur.day}_picking_chunk.log"
 
             # writing picking log file
             picked_coord = []
-            record = []
+            
+            # reset record for avoid duplicate picking
+            if time.time()-reset_record_time >= int(local_env['SECOND_RESET_PICK_RECORD']):
+                record = []
+
             with open(picking_logfile,"a") as pif:
                 cur_time = datetime.utcfromtimestamp(time.time())
                 pif.write('='*25)
@@ -283,7 +285,7 @@ def DecisionMaker(env_config, pick_msg, system_time, stationInfo, notify_TF, n_n
                 notify_TF.value += 1
                 for picked_idx in range(len(picked_coord)):
                     toNotify_pickedCoord[picked_idx] = picked_coord[picked_idx]
-
+            print("iteration: ", time.time()-start)
         except Exception as e:
             # log the pending 
             cur = datetime.fromtimestamp(time.time())
