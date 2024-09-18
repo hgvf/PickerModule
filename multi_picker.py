@@ -144,14 +144,17 @@ class Mqtt_Predictor():
         # append the data in package into shared waveform buffer
         startIndex = int(starttime*self.samp_rate) - int(self.waveform_buffer_start_time.value)
         
-        if startIndex >= 0 and startIndex < self.store_length:
-            data = data.copy()
-            self.waveform_buffer[self.key_index[scnl]][startIndex:startIndex+nsamp] = torch.from_numpy(data)
-    
-            # send information to module for calculating Pa, Pv, and Pd
-            if channel[-1] == 'Z':
-                msg_to_pavd = {scnl: data}
-                self.pavd_scnl.put(msg_to_pavd)
+        try:
+            if startIndex >= 0 and startIndex < self.store_length:
+                data = data.copy()
+                self.waveform_buffer[self.key_index[scnl]][startIndex:startIndex+nsamp] = torch.from_numpy(data)
+        
+                # send information to module for calculating Pa, Pv, and Pd
+                if channel[-1] == 'Z':
+                    msg_to_pavd = {scnl: data}
+                    self.pavd_scnl.put(msg_to_pavd)
+        except:
+            pass
          
     def on_disconnect(self, client, userdata, rc):
         if rc != 0:
@@ -528,10 +531,10 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, loca
             system_record_time = time.time()
 
             # 每小時發一個 notify，證明系統還活著
-            if f"{system_year}-{system_month}-{system_day}-{system_hour}" != f"{cur.year}-{cur.month}-{cur.day}-{cur.hour}":
-                wave_token_number = random.sample(range(len(waveform_tokens)), k=1)[0]
-                wave_token_number = alive_notify(waveform_tokens, wave_token_number, local_env['CHECKPOINT_TYPE'], local_env['SOURCE'])
-                system_hour = cur.hour
+            # if f"{system_year}-{system_month}-{system_day}-{system_hour}" != f"{cur.year}-{cur.month}-{cur.day}-{cur.hour}":
+            #     wave_token_number = random.sample(range(len(waveform_tokens)), k=1)[0]
+            #     wave_token_number = alive_notify(waveform_tokens, wave_token_number, local_env['CHECKPOINT_TYPE'], local_env['SOURCE'])
+            #     system_hour = cur.hour
 
             # 已經是系統時間的隔天，檢查有沒有過舊的 log file，有的話將其刪除
             if f"{system_year}-{system_month}-{system_day}" != f"{cur.year}-{cur.month}-{cur.day}":
@@ -692,67 +695,68 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, loca
 
                     # Numbers of Zero-Crossing
                     zero_cross = ZeroCrossing(res, pred_trigger, toPredict_wave)
-
+                    
                     # Check the Pa & numbers of zero-crossing
                     res = check_Pa_ZeroCross(res, Pa, zero_cross, (float(local_env['THRESHOLD_PA']), int(local_env['THRESHOLD_ZCROSS'])))
 
                     # send pick_msg to PICK_RING
                     pick_msg = gen_pickmsg(station_factor_coords, res, pred_trigger, toPredict_scnl, cur_waveform_starttime, (Pa, Pv, Pd), duration, P_weight, int(local_env['STORE_LENGTH']), int(local_env['PREDICT_LENGTH']))
-
+                    
                     # get the filenames
-                    cur = datetime.fromtimestamp(time.time())
-                    picking_logfile = f"./log/picking/{local_env['CHECKPOINT_TYPE']}_{cur.year}-{cur.month}-{cur.day}_picking_chunk{local_env['CHUNK']}.log"
+                    if np.any(res):
+                        cur = datetime.fromtimestamp(time.time())
+                        picking_logfile = f"./log/picking/{local_env['CHECKPOINT_TYPE']}_{cur.year}-{cur.month}-{cur.day}_picking_chunk{local_env['CHUNK']}.log"
 
-                    # writing picking log file
-                    picked_coord = []
-                    with open(picking_logfile,"a") as pif:
-                        cur_time = datetime.utcfromtimestamp(time.time())
-                        pif.write('='*25)
-                        pif.write(f"Report time: {cur_time.strftime('%Y-%m-%d %H:%M:%S.%f')}")
-                        pif.write('='*25)
-                        pif.write('\n')
-                        for msg in pick_msg:
-                            #print(msg)
-                            tmp = msg.split(' ')
+                        # writing picking log file
+                        picked_coord = []
+                        with open(picking_logfile,"a") as pif:
+                            cur_time = datetime.utcfromtimestamp(time.time())
+                            pif.write('='*25)
+                            pif.write(f"Report time: {cur_time.strftime('%Y-%m-%d %H:%M:%S.%f')}")
+                            pif.write('='*25)
+                            pif.write('\n')
+                            for msg in pick_msg:
+                                #print(msg)
+                                tmp = msg.split(' ')
 
-                            # filtered by P_weight
-                            p_weight = int(tmp[-3])
+                                # filtered by P_weight
+                                p_weight = int(tmp[-3])
 
-                            if p_weight <= int(local_env['REPORT_P_WEIGHT']):
-                                picked_coord.append(msg)
-                                pif.write(" ".join(tmp[:6]))
+                                if p_weight <= int(local_env['REPORT_P_WEIGHT']) and float(tmp[6]) >= float(local_env['THRESHOLD_PA']):
+                                    picked_coord.append(msg)
+                                    pif.write(" ".join(tmp[:6]))
 
-                                pick_time = datetime.utcfromtimestamp(float(tmp[-4]))
-                                # print('pick_time: ', pick_time)
-                                pif.write(f",\tp arrival time-> {pick_time.strftime('%Y-%m-%d %H:%M:%S.%f')}\n")
-                                pif.write(f"{msg}\n")
+                                    pick_time = datetime.utcfromtimestamp(float(tmp[-4]))
+                                    # print('pick_time: ', pick_time)
+                                    pif.write(f",\tp arrival time-> {pick_time.strftime('%Y-%m-%d %H:%M:%S.%f')}\n")
+                                    pif.write(f"{msg}\n")
 
-                                # publish to mqtt (pick_msg)
-                                message = {
-                                    "station" : tmp[0],
-                                    "channel" : tmp[1],
-                                    "network" : tmp[2],
-                                    "location" : tmp[3],
-                                    "longitude" : tmp[4],
-                                    "latitude" : tmp[5],
-                                    "pa" : tmp[6],
-                                    "pv" : tmp[7],
-                                    "pd" : tmp[8],
-                                    "tc" : tmp[9],
-                                    "ptime" : tmp[10],
-                                    "weight" : tmp[11],
-                                    "instrument" : tmp[12],
-                                    "upd_sec" : tmp[13],
-                                    "picker_type": picker_type,
-                                }
-                                client.publish(f"{local_env['PICK_MSG_TOPIC']}/{local_env['CHECKPOINT_TYPE']}", json.dumps(message))
-                                
-                        pif.close() 
+                                    # publish to mqtt (pick_msg)
+                                    message = {
+                                        "station" : tmp[0],
+                                        "channel" : tmp[1],
+                                        "network" : tmp[2],
+                                        "location" : tmp[3],
+                                        "longitude" : tmp[4],
+                                        "latitude" : tmp[5],
+                                        "pa" : tmp[6],
+                                        "pv" : tmp[7],
+                                        "pd" : tmp[8],
+                                        "tc" : tmp[9],
+                                        "ptime" : tmp[10],
+                                        "weight" : tmp[11],
+                                        "instrument" : tmp[12],
+                                        "upd_sec" : tmp[13],
+                                        "picker_type": picker_type,
+                                    }
+                                    client.publish(f"{local_env['PICK_MSG_TOPIC']}/{local_env['CHECKPOINT_TYPE']}", json.dumps(message))
+                                    
+                            pif.close() 
 
                     # plotting the station on the map and send info to Line notify
                     cur_time = datetime.utcfromtimestamp(time.time())
                     # print(f"({picker_type}), {len(picked_coord)} stations are picked! <- {cur_time.strftime('%Y-%m-%d %H:%M:%S.%f')}")
-                        
+                    
                 else:
                     # plotting the station on the map and send info to Line notify
                     cur_time = datetime.utcfromtimestamp(time.time())

@@ -30,11 +30,11 @@ LOCATION='None'
 ################ Section4: Picker-related ################
 CHECKPOINT_TYPE='GRADUATE'                   # Model opt of picker
 THRESHOLD_TYPE="max"                    # Picking criteria of picker
-THRESHOLD_PROB=0.6                      # Probability threshold of picker
+THRESHOLD_PROB=0.7                      # Probability threshold of picker
 THRESHOLD_TRIGGER=40                    # Continuous sample threshold of picker
 ZSCORE=1
 FILTER=1
-THRESHOLD_PA=0.9
+THRESHOLD_PA=1.5
 THRESHOLD_ZCROSS=12
 
 ################ Section5: AvoidFP-related ################

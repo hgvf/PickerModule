@@ -38,7 +38,7 @@ THRESHOLD_LAMBDA=14
 ZSCORE=0
 FILTER=1
 THRESHOLD_PA=0.9
-THRESHOLD_ZCROSS=13
+THRESHOLD_ZCROSS=10
 
 ################ Section5: AvoidFP-related ################
 THRESHOLD_KM=20                        # 搜集測站方圓 x km 內的所有測站代碼

@@ -13,12 +13,12 @@ REDPAN_ENV=./env/REDPAN_env
 STALTA_ENV=./env/STALTA_env
 
 RF_CLASSIFIER_PATH=./checkpoints/RandomForest.joblib
-XGB_CLASSIFIER_PATH=./checkpoints/xgboost.joblib
+XGB_CLASSIFIER_PATH=./checkpoints/xgboost_ReduceNoise.joblib
 DL_CLASSIFIER_PATH=./checkpoints/whole_data_masked.pt
 
 ################ Activate the picker(s)  ################
 EQT=1               # picker_type == 2
-phaseNet=1          # picker_type == 3
+phaseNet=0          # picker_type == 3
 GRADUATE=1          # picker_type == 4
 REDPAN=0            # picker_type == 0
 STALTA=1            # picker_type == 1
@@ -61,17 +61,18 @@ CHANNEL='None'
 LOCATION='None'
 
 ################ AvoidFP-related ################
-THRESHOLD_KM=20                        # 搜集測站方圓 x km 內的所有測站代碼
+THRESHOLD_KM=25                       # 搜集測站方圓 x km 內的所有測站代碼
 THRESHOLD_NEIGHBOR=2                   # 如果某個測站方圓 THRESHOLD_KM km 內有 x 個測站也被 picked，則該測站就算真的被 picked
 THRESHOLD_N_PICKER=3
 NEAREST_STATION=5                      # 蒐集最靠近測站的 x 個周圍測站
 TABLE_OPTION='nearest'                 # nearest: 選擇觀察最靠近的幾個測站, km: 選擇距離 x 公里內的幾個測站
 REPORT_P_WEIGHT=1                             # 規定每次 picking 的絕對時間要比上次晚一秒以上
 TIME_COLLECT=8
-SECOND_ACTIVATE_DECISION_MAKER=0.6
+SECOND_ACTIVATE_DECISION_MAKER=0.3
 DECISION_TYPE="ML"                      # neighbor, ML, DL
 DECISION_ML_CLASSIFIER='XGBoost'        # XGBoost, RandomForest
-REPORT_NUM_OF_TRIGGER_DECISION_MAKING=3
+REPORT_NUM_OF_TRIGGER_DECISION_MAKING=2
+SECOND_RESET_PICK_RECORD=4
 
 ################ System-related ################
 SLEEP_SECOND=10                        # Picker 剛啟動要待機多久
