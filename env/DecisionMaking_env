@@ -4,6 +4,8 @@ PORT=1883
 TIMEOUT=6000
 WAVE_TOPIC=RSD24bits
 PICK_MSG_TOPIC=PICK24bits
+MQTT_username="rsd_public"
+MQTT_password="rsd_public"
 
 ################ Filepaths of environments  ################
 EQT_ENV=./env/EQT_env

@@ -73,15 +73,27 @@ def get_PalertStationInfo(palert_path):
     
     return stationInfo
 
-def get_CWBStationInfo(cwb_path):
-    with open(cwb_path, 'r') as f:
-        sta_eew = f.readlines()
-    
+def get_CWAStationInfo(cwb_path):
+    station_list = pd.read_excel("./nsta/Station.xlsx")
+    usage = pd.read_excel("./nsta/Usage.xlsx")
+
+    cwasn_mask = np.logical_or(usage['co_station'] == 0, usage['co_station'] == 2)
+    usage = usage.loc[cwasn_mask]
+
+    cur_date = datetime.fromtimestamp(time.time())
+    month = cur_date.month if cur_date.month >= 10 else '0'+str(cur_date.month)
+    day = cur_date.day if cur_date.day >= 10 else '0'+str(cur_date.day)
+    date8code = f"{cur_date.year}{month}{day}"
+
     stationInfo = {}
-    for l in sta_eew:
-        tmp = l.split(' ')
-        
-        stationInfo[tmp[0]] = [tmp[8], tmp[5], tmp[-2]]
+    for idx, row in usage.iterrows():
+        if row['start_date'] <= int(date8code) and row['end_date'] >= int(date8code):
+            station_code = row['station_code']
+            station_name = station_list.loc[station_list['Station_Code'] == station_code]['CWBSN_code'].iloc[0]
+            
+            key = f"{station_name}_{row['channel_name'][:2]}_TW_{row['Location']}"
+            value = [row['Ins_longitude'], row['Ins_latitude'], [row['Z_factor'], row['N_factor'], row['E_factor']]]
+            stationInfo[key] = value
 
     return stationInfo
 
@@ -118,6 +130,23 @@ def get_Palert_CWB_coord(key, stationInfo):
             continue
         
     return output, station, flag
+
+def get_CWASN_coord_factor(toPredict_scnl, stationInfo):
+    res = []
+    station_list = []
+    flag = []
+    
+    for scnl in toPredict_scnl:
+        if scnl in stationInfo:
+            res.append([stationInfo[scnl][0], stationInfo[scnl][1], stationInfo[scnl][2]])
+            station_list.append(scnl.split("_")[0])
+            flag.append(True)
+        else:
+            res.append([-1, -1, [-1, -1, -1]])
+            station_list.append(None)
+            flag.append(False)
+        
+    return res, station_list, flag
 
 # load line tokens
 def load_tokens(notify_path, waveform_path):
@@ -483,7 +512,7 @@ def gen_pickmsg(station_factor_coords, res, pred_trigger, toPredict_scnl, wavefo
     return pick_msg
 
 # plot the picking info on Taiwan map
-def plot_taiwan(name, coords1, token, token_number, CHECKPOINT_TYPE):
+def plot_taiwan(name, coords1, token, token_number, CHECKPOINT_TYPE, SOURCE):
     m = StaticMap(300, 400)
 
     for sta in coords1:
@@ -495,14 +524,13 @@ def plot_taiwan(name, coords1, token, token_number, CHECKPOINT_TYPE):
     image.save(f"./plot/trigger/{name}.png")
 
     token_number = random.sample(range(len(token)), k=1)[0]
-    token_number = notify(len(coords1), name, token, token_number, CHECKPOINT_TYPE)
+    token_number = notify(len(coords1), name, token, token_number, CHECKPOINT_TYPE, SOURCE)
     
     return token_number
 
 # send the picking info to Line notify
-def notify(n_sta, name, token, token_number, CHECKPOINT_TYPE):
-    message = '\n(Palert)' + str(CHECKPOINT_TYPE) + '\n'+str(n_sta) + ' 個測站偵測到 P 波\n報告時間: '+str((datetime.utcfromtimestamp(time.time()) + timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S.%f'))
-    message += '\n'
+def notify(n_sta, name, token, token_number, CHECKPOINT_TYPE, SOURCE):
+    message = f"({SOURCE}) {CHECKPOINT_TYPE} \n{n_sta} 個測站偵測到 P 波\n報告時間: {(datetime.utcfromtimestamp(time.time()) + timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S.%f')}\n"
 
     cnt = 0
     while True:
@@ -788,6 +816,16 @@ def station_selection(sel_chunk, station_list, opt, build_table=False, n_station
                     table.update(cur)
 
         return [i[0] for i in station_chunks[start_chunk]], table
+
+def ForCWASN_station_selection(station_list):
+    #  ('W287', [121.9191, 25.1209, 16.718, 'HL', '--'])
+    data = []
+    for k, v in station_list.items():
+        tmp = k.split('_')
+        
+        data.append((tmp[0], [v[0], v[1], v[2], tmp[1], tmp[-1]]))
+        
+    return [data]
 
 # For TSMIP, 用 station_code 代碼再分區
 def ForTSMIP_station_selection(stationInfo):
