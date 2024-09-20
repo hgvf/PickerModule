@@ -147,7 +147,7 @@ class Mqtt_Predictor():
         try:
             if startIndex >= 0 and startIndex < self.store_length:
                 data = data.copy()
-                self.waveform_buffer[self.key_index[scnl]][startIndex:startIndex+nsamp] = torch.from_numpy(data)
+                self.waveform_buffer[self.key_index[scnl]][startIndex:startIndex+data.shape[0]] = torch.from_numpy(data)
         
                 # send information to module for calculating Pa, Pv, and Pd
                 if channel[-1] == 'Z':
@@ -177,6 +177,8 @@ class Mqtt_Predictor():
         # callback functions
         self.client.on_message = self.on_message
         self.client.on_disconnect = self.on_disconnect    
+
+        # self.client.username_pw_set(self.env_config['MQTT_username'], self.env_config['MQTT_password'])
 
         # 連線至 MQTT 伺服器（伺服器位址,連接埠）, timeout=6000s
         self.client.connect(self.env_config['MQTT_SERVER'], int(self.env_config['PORT']), int(self.env_config['TIMEOUT']))
@@ -321,7 +323,7 @@ class Mqtt_Predictor():
         if self.env_config['SOURCE'] == 'Palert':
             self.stationInfo = get_PalertStationInfo(self.env_config['STATION_FILEPATH'])
         elif self.env_config['SOURCE'] == 'CWASN':
-            self.stationInfo = get_CWBStationInfo(self.env_config['STATION_FILEPATH'])
+            self.stationInfo = get_CWAStationInfo(self.env_config['STATION_FILEPATH'])
         elif self.env_config['SOURCE'] == 'TSMIP':
             self.stationInfo = get_TSMIPStationInfo(self.env_config['STATION_FILEPATH'])
         else:
@@ -368,8 +370,9 @@ class Mqtt_Predictor():
             station_chunks = ForPalert_station_selection(self.stationInfo, n_stations)
         elif source == 'TSMIP':
             station_chunks = ForTSMIP_station_selection(self.stationInfo)
-        # TODO: CWASN
-
+        elif source == 'CWASN':
+            station_chunks = ForCWASN_station_selection(self.stationInfo)
+        
         # Check the chunk number
         chunk = self.env_config['CHUNK']
         end_chunk = None
@@ -408,8 +411,9 @@ class Mqtt_Predictor():
                     for chn in channel_tail:
                         # filter the location
                         if len(location_list) == 0 or sta[1][4] in location_list:
+                            # <Topic>/TW/Station/Location/Channel
                             topic.append(f"{topic_prefix}/TW/{sta[0]}/{sta[1][4]}/{sta[1][3]}{chn}")
-
+        
         self.topic = topic
 
 def TimeMover(waveform_buffer, env_config, nowtime, waveform_buffer_start_time):
@@ -611,13 +615,19 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, loca
             toPredict_scnl = np.array(toPredict_scnl)
 
             # get the factor and coordinates of stations
-            if local_env['SOURCE'] == 'Palert' or local_env['SOURCE'] == 'CWASN' or local_env['SOURCE'] == 'TSMIP':
+            if local_env['SOURCE'] == 'Palert' or local_env['SOURCE'] == 'TSMIP':
                 station_factor_coords, station_list, flag = get_Palert_CWB_coord(toPredict_scnl, stationInfo)
 
                 # count to gal
                 factor = torch.tensor([f[-1] for f in station_factor_coords])
                 
                 toPredict_wave = toPredict_wave/factor[:, None, None].to(device)
+            elif local_env['SOURCE'] == 'CWASN':
+                station_factor_coords, station_list, flag = get_CWASN_coord_factor(toPredict_scnl, stationInfo)
+
+                factor = torch.tensor([f[-1] for f in station_factor_coords])
+                
+                toPredict_wave = toPredict_wave * factor[..., None]
             else:
                 continue
     
@@ -877,8 +887,8 @@ def PavdModule_sender(CHECKPOINT_TYPE, SAMP_RATE, pavd_calc, waveform_comein, wa
             for i in range(7):
                 if pavd_calc[i].value == 0:
                     waveform_scnl[i].value = scnl
-                    waveform_comein[i][0][:SAMP_RATE] = torch.from_numpy(waveform)
-                    waveform_comein_length[i].value += SAMP_RATE   
+                    waveform_comein[i][0][:waveform.shape[0]] = torch.from_numpy(waveform)
+                    waveform_comein_length[i].value += waveform.shape[0]   
                     pavd_calc[i].value += 1    
 
                     break     

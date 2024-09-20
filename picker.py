@@ -105,7 +105,7 @@ class Mqtt():
         
         if startIndex >= 0 and startIndex < self.store_length:
             data = data.copy()
-            self.waveform_buffer[self.key_index[scnl]][startIndex:startIndex+nsamp] = torch.from_numpy(data)
+            self.waveform_buffer[self.key_index[scnl]][startIndex:startIndex+data.shape[0]] = torch.from_numpy(data)
     
             # send information to module for calculating Pa, Pv, and Pd
             if channel[-1] == 'Z':
@@ -133,6 +133,8 @@ class Mqtt():
         # callback functions
         self.client.on_message = self.on_message
         self.client.on_disconnect = self.on_disconnect    
+
+        # self.client.username_pw_set(self.env_config['MQTT_username'], self.env_config['MQTT_password'])
 
         # 連線至 MQTT 伺服器（伺服器位址,連接埠）, timeout=6000s
         self.client.connect(self.env_config['MQTT_SERVER'], int(self.env_config['PORT']), int(self.env_config['TIMEOUT']))
@@ -163,7 +165,7 @@ class Mqtt():
                 pavd_calculator.start()
                 pavd_processes.append(pavd_calculator)
 
-            notifier = Process(target=Notifier, args=(self.notify_TF, self.toNotify_pickedCoord, self.notify_tokens, self.n_notify, self.env_config['CHECKPOINT_TYPE']))
+            notifier = Process(target=Notifier, args=(self.notify_TF, self.toNotify_pickedCoord, self.notify_tokens, self.n_notify, self.env_config['CHECKPOINT_TYPE'], self.env_config['SOURCE']))
             notifier.start()
 
             wave_shower = Process(target=Shower, args=(self.waveform_plot_TF, self.plot_info, self.waveform_plot_wf, self.waveform_plot_out, self.waveform_plot_picktime, self.waveform_tokens, self.env_config['CHECKPOINT_TYPE'], self.env_config['SOURCE']))
@@ -217,7 +219,7 @@ class Mqtt():
         if self.env_config['SOURCE'] == 'Palert':
             self.stationInfo = get_PalertStationInfo(self.env_config['STATION_FILEPATH'])
         elif self.env_config['SOURCE'] == 'CWASN':
-            self.stationInfo = get_CWBStationInfo(self.env_config['STATION_FILEPATH'])
+            self.stationInfo = get_CWAStationInfo(self.env_config['STATION_FILEPATH'])
         elif self.env_config['SOURCE'] == 'TSMIP':
             self.stationInfo = get_TSMIPStationInfo(self.env_config['STATION_FILEPATH'])
         else:
@@ -284,7 +286,8 @@ class Mqtt():
             station_chunks = ForPalert_station_selection(self.stationInfo, n_stations)
         elif source == 'TSMIP':
             station_chunks = ForTSMIP_station_selection(self.stationInfo)
-        # TODO: CWASN
+        elif source == 'CWASN':
+            station_chunks = ForCWASN_station_selection(self.stationInfo)
 
         # Check the chunk number
         chunk = self.env_config['CHUNK']
@@ -543,13 +546,19 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
             toPredict_scnl = np.array(toPredict_scnl)
 
             # get the factor and coordinates of stations
-            if local_env['SOURCE'] == 'Palert' or local_env['SOURCE'] == 'CWASN' or local_env['SOURCE'] == 'TSMIP':
+            if local_env['SOURCE'] == 'Palert' or local_env['SOURCE'] == 'TSMIP':
                 station_factor_coords, station_list, flag = get_Palert_CWB_coord(toPredict_scnl, stationInfo)
 
                 # count to gal
                 factor = torch.tensor([f[-1] for f in station_factor_coords])
                 
                 toPredict_wave = toPredict_wave/factor[:, None, None].to(device)
+            elif local_env['SOURCE'] == 'CWASN':
+                station_factor_coords, station_list, flag = get_CWASN_coord_factor(toPredict_scnl, stationInfo)
+
+                factor = torch.tensor([f[-1] for f in station_factor_coords])
+                
+                toPredict_wave = toPredict_wave * factor[..., None]
             else:
                 continue
     
@@ -684,7 +693,7 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
                             # filtered by P_weight
                             p_weight = int(tmp[-3])
 
-                            if p_weight <= int(local_env['REPORT_P_WEIGHT']):
+                            if p_weight <= int(local_env['REPORT_P_WEIGHT']) and float(tmp[6]) >= float(local_env['THRESHOLD_PA']):
                                 pif.write(" ".join(tmp[:6]))
 
                                 pick_time = datetime.utcfromtimestamp(float(tmp[-4]))
@@ -805,7 +814,7 @@ def Picker(waveform_buffer, key_index, nowtime, waveform_buffer_start_time, env_
             continue
 
 # notifing 
-def Notifier(notify_TF, toNotify_pickedCoord, line_tokens, n_notify, CHECKPOINT_TYPE):
+def Notifier(notify_TF, toNotify_pickedCoord, line_tokens, n_notify, CHECKPOINT_TYPE, SOURCE):
     print('Starting Notifier...')
 
     token_number, line_token_number = 0, 0
@@ -823,7 +832,7 @@ def Notifier(notify_TF, toNotify_pickedCoord, line_tokens, n_notify, CHECKPOINT_
             trigger_plot_filename = f"{CHECKPOINT_TYPE}_{cur_time.year}-{cur_time.month}-{cur_time.day}_{cur_time.hour}_{cur_time.minute}_{cur_time.second}"
             
             start = time.time()
-            line_token_number = plot_taiwan(trigger_plot_filename, picked_coord, line_tokens, line_token_number, CHECKPOINT_TYPE)
+            line_token_number = plot_taiwan(trigger_plot_filename, picked_coord, line_tokens, line_token_number, CHECKPOINT_TYPE, SOURCE)
 
             notify_TF.value *= 0
 
@@ -1051,8 +1060,8 @@ def PavdModule_sender(CHECKPOINT_TYPE, SAMP_RATE, pavd_calc, waveform_comein, wa
             for i in range(7):
                 if pavd_calc[i].value == 0:
                     waveform_scnl[i].value = scnl
-                    waveform_comein[i][0][:SAMP_RATE] = torch.from_numpy(waveform)
-                    waveform_comein_length[i].value += SAMP_RATE   
+                    waveform_comein[i][0][:waveform.shape[0]] = torch.from_numpy(waveform)
+                    waveform_comein_length[i].value += waveform.shape[0]   
                     pavd_calc[i].value += 1    
 
                     break     
