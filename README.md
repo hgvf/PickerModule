@@ -15,6 +15,23 @@ $ git clone https://github.com/hgvf/PickerModule.git
 $ docker build -t picker:v1 .
 ```
 
+## Step3: Activate the picker module
+* Single picker
+```shell=
+$ TF_CPP_MIN_LOG_LEVEL=3 CUDA_VISIBLE_DEVICES=<gpu ID> python picker.py <path to env file> 
+```
+
+* Multiple pickers
+  * 在實驗室的 mqtt 很常因為網路傳輸量過大，導致 mqtt connection lost，所以如果要同時用多個 pickers 就用這條指令
+```shell=
+$ TF_CPP_MIN_LOG_LEVEL=3 CUDA_VISIBLE_DEVICES=<gpu ID> python multi_picker.py ./env/DecisionMaking_env
+```
+
+* Decision making
+```shell=
+$ CUDA_VISIBLE_DEVICES=<gpu ID> python decision_making.py ./env/DecisionMaking_env
+
+```
 ---
 ## TODO
 * 要在 building image 時或是 之後再進入 container 啟動
