@@ -20,7 +20,7 @@ PICKER_CHECKPOINT_PATH = ./checkpoints/GRADUATE_2000.pt
 ################ Section3: Data-related ################
 CHUNK=4-6                                # Chunk of data, station split by lontitude and latitude (-1: don't split)
 SOURCE='Palert'                         # Data Source: Palert, TSMIP24Bit or CWASN24Bit
-STORE_LENGTH=4000                       # Length of waveform buffer
+STORE_LENGTH=6000                       # Length of waveform buffer
 PREDICT_LENGTH=2000
 N_PREDICTION_STATION=150                # Maximum number of station to predict
 SAMP_RATE=100
