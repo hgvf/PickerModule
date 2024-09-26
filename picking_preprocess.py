@@ -32,8 +32,20 @@ def filter(waveform, sos):
 
     return torch.FloatTensor(res[:, :, n_append*n_repeat:-n_append*n_repeat]).to(device)
 
+def pad_zero(wave):
+    device = wave.device
+    wave = wave.cpu().numpy()
+
+    zero_points = (wave == 0)
+    shifted_data = np.roll(wave, shift=1, axis=2)
+    wave[zero_points] = shifted_data[zero_points]
+
+    return torch.FloatTensor(wave).to(device)
+
 def z_score(wave):
     eps = 1e-10
+
+    wave = pad_zero(wave)
 
     wave = wave - torch.mean(wave, dim=-1, keepdims=True)
     wave = wave / (torch.std(wave, dim=-1, keepdims=True) + eps) 
